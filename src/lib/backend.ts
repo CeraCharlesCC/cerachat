@@ -17,7 +17,7 @@ import type {
 
 export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
-let browserBootstrap: BootstrapState = structuredClone(demoBootstrap)
+const browserBootstrap: BootstrapState = structuredClone(demoBootstrap)
 let browserMessages: Message[] = structuredClone(demoMessages)
 const browserListeners = new Set<(payload: StreamPayload) => void>()
 
