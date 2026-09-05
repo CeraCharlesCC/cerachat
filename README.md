@@ -1,50 +1,57 @@
-# React + TypeScript + Vite
+# CeraChat
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+CeraChat is a local-first Tauri 2 chat client built around one rule: the only model network access is the request the user explicitly compiles, inspects, and sends.
 
-Currently, two official plugins are available:
+## v1 architecture
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Desktop:** Tauri 2 + Rust
+- **UI:** React + TypeScript + Vite
+- **Storage:** SQLite with foreign keys, WAL, and cascade deletes
+- **Provider:** OpenAI-compatible Chat Completions streaming over SSE
+- **Context:** local TXT/MD/JSON/LOG/CSV text plus locally expanded ZIP entries
+- **Blob storage:** SHA-256 content addressing with zstd compression
 
-## Expanding the ESLint configuration
+There are deliberately no tools, function calling, MCP, RAG, web search, model discovery, capability probes, auto-summarization, auto-title model calls, telemetry, cloud sync, or provider fallback loops.
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
+## Request flow
 
-- Configure the top-level `parserOptions` property like this:
+1. Choose a conversation branch and history policy.
+2. Add local context sources and enable whole-file or line-range slices.
+3. Choose raw/labeled wrapping, ordering, and insertion point per slice.
+4. Open **Request** to inspect the exact JSON, token estimate, compiled audit text, and SHA-256.
+5. **Send** performs one HTTP POST. Redirects and automatic reqwest retries are disabled.
+6. The exact request JSON, compiled prompt, SHA-256, and referenced context blob hashes are persisted for reproducibility.
 
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+Provider settings are saved locally without making a network request. The first Send is the first provider access.
+
+## Portable data
+
+By default the desktop executable writes under a sibling `data/` directory:
+
+```text
+CeraChat/
+├─ CeraChat.exe
+└─ data/
+   ├─ chat.sqlite3
+   ├─ settings.json
+   ├─ secrets.json
+   └─ logs/
 ```
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
+Set `CERACHAT_DATA_DIR` to override the directory during development. v1 supports the explicit **Plain portable configuration** API-key mode; the Windows DPAPI choice is visible as planned but disabled rather than silently falling back.
 
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react'
+## Development
 
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-})
+```bash
+npm install
+cargo install tauri-cli --version "^2"
+cargo tauri dev
 ```
+
+For a frontend-only browser preview:
+
+```bash
+npm run dev
+```
+
+The browser preview uses local demo data and simulates streaming. File import and real provider requests are desktop-only.

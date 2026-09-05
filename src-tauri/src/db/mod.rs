@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod context;
+pub mod request;
 pub mod schema;
 
 use std::{path::PathBuf, sync::Mutex};

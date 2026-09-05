@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
   created_at INTEGER NOT NULL,
   FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
   FOREIGN KEY(user_message_id) REFERENCES messages(id) ON DELETE CASCADE,
-  FOREIGN KEY(assistant_message_id) REFERENCES messages(id) ON DELETE SET NULL
+  FOREIGN KEY(assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS request_context (
   request_id TEXT NOT NULL,

@@ -15,3 +15,5 @@ export interface RequestPreview { request_json: string; compiled_prompt: string;
 export interface BootstrapState { conversations: Conversation[]; provider: ProviderConfig; sources: WorkspaceSource[]; slices: ContextSlice[]; data_dir?: string }
 export interface StreamPayload { request_id: string; conversation_id: string; kind: 'started' | 'delta' | 'done' | 'error'; text?: string; error?: string; assistant_message?: Message; user_message?: Message }
 export interface CompileRequestArgs { conversationId: string; parentId: string | null; input: string; historyMode: HistoryMode; sinceMessageId?: string | null }
+export interface AddSliceArgs { sourceId: string; rangeType: 'all' | 'lines' | 'chars'; startPos?: number | null; endPos?: number | null; wrapper: WrapperMode; insertAt: InsertAt }
+export interface UpdateSliceArgs { sliceId: string; enabled?: boolean; wrapper?: WrapperMode; insertAt?: InsertAt; sortOrder?: number }
