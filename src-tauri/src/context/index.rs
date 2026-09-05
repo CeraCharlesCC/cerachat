@@ -15,10 +15,19 @@ impl TextIndex {
     }
 
     pub fn line_count(&self, text: &str) -> usize {
-        if text.is_empty() { 0 } else { self.line_offsets.len() }
+        if text.is_empty() {
+            0
+        } else {
+            self.line_offsets.len()
+        }
     }
 
-    pub fn byte_range_for_lines(&self, text: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    pub fn byte_range_for_lines(
+        &self,
+        text: &str,
+        start: usize,
+        end: usize,
+    ) -> Option<(usize, usize)> {
         let total = self.line_count(text);
         if start == 0 || start > total || end < start {
             return None;

@@ -2,15 +2,19 @@ use std::path::Path;
 
 use chardetng::EncodingDetector;
 
-use crate::error::{AppError, AppResult};
 use super::index::TextIndex;
+use crate::error::{AppError, AppResult};
 
 pub const TEXT_EXTENSIONS: &[&str] = &["txt", "md", "json", "log", "csv"];
 
 pub fn is_supported_text_path(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
-        .map(|value| TEXT_EXTENSIONS.iter().any(|ext| value.eq_ignore_ascii_case(ext)))
+        .map(|value| {
+            TEXT_EXTENSIONS
+                .iter()
+                .any(|ext| value.eq_ignore_ascii_case(ext))
+        })
         .unwrap_or(false)
 }
 
@@ -24,9 +28,14 @@ pub fn decode_text(bytes: &[u8]) -> AppResult<String> {
     let encoding = detector.guess(None, true);
     let (decoded, _, had_errors) = encoding.decode(bytes);
     if had_errors && encoding == encoding_rs::UTF_8 {
-        return Err(AppError::Message("text contains invalid UTF-8 sequences".into()));
+        return Err(AppError::Message(
+            "text contains invalid UTF-8 sequences".into(),
+        ));
     }
-    Ok(decoded.into_owned().trim_start_matches('\u{feff}').to_string())
+    Ok(decoded
+        .into_owned()
+        .trim_start_matches('\u{feff}')
+        .to_string())
 }
 
 pub fn line_count(text: &str) -> i64 {
@@ -60,10 +69,14 @@ pub fn slice_text(
             let start = start_pos.unwrap_or(0).max(0) as usize;
             let end = end_pos.unwrap_or(chars.len() as i64).max(start as i64) as usize;
             if start > chars.len() {
-                return Err(AppError::Message("character range starts past end of source".into()));
+                return Err(AppError::Message(
+                    "character range starts past end of source".into(),
+                ));
             }
             Ok(chars[start..end.min(chars.len())].iter().collect())
         }
-        other => Err(AppError::Message(format!("unsupported range type: {other}"))),
+        other => Err(AppError::Message(format!(
+            "unsupported range type: {other}"
+        ))),
     }
 }

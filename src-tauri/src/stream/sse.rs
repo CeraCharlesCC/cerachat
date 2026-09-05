@@ -29,7 +29,10 @@ impl SseParser {
 }
 
 fn find_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
-    let lf = bytes.windows(2).position(|window| window == b"\n\n").map(|i| (i, 2));
+    let lf = bytes
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|i| (i, 2));
     let crlf = bytes
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -65,7 +68,26 @@ pub fn openai_delta(data: &str) -> AppResult<Option<String>> {
     Ok(value
         .pointer("/choices/0/delta/content")
         .and_then(serde_json::Value::as_str)
-        .or_else(|| value.pointer("/choices/0/text").and_then(serde_json::Value::as_str))
+        .or_else(|| {
+            value
+                .pointer("/choices/0/text")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::to_string))
+}
+
+pub fn responses_delta(data: &str) -> AppResult<Option<String>> {
+    let value: serde_json::Value = serde_json::from_str(data)
+        .map_err(|error| AppError::Message(format!("invalid Responses SSE JSON: {error}")))?;
+    if let Some(error) = value.get("error") {
+        return Err(AppError::Message(format!("provider stream error: {error}")));
+    }
+    Ok(value
+        .get("type")
+        .and_then(|kind| kind.as_str())
+        .filter(|kind| *kind == "response.output_text.delta")
+        .and_then(|_| value.get("delta"))
+        .and_then(serde_json::Value::as_str)
         .map(str::to_string))
 }
 
@@ -76,7 +98,9 @@ mod tests {
     #[test]
     fn parses_fragmented_events() {
         let mut parser = SseParser::default();
-        assert!(parser.push(b"data: {\"choices\":[{\"delta\":{\"content\":\"he").is_empty());
+        assert!(parser
+            .push(b"data: {\"choices\":[{\"delta\":{\"content\":\"he")
+            .is_empty());
         let events = parser.push(b"llo\"}}]}\n\ndata: [DONE]\n\n");
         assert_eq!(events.len(), 2);
         assert_eq!(openai_delta(&events[0]).unwrap().as_deref(), Some("hello"));

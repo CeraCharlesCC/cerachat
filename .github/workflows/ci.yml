@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo check
+      - run: cargo clippy -- -D warnings
+
+  windows-portable:
+    name: Windows portable build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm run build
+      - run: cargo build --release --manifest-path src-tauri/Cargo.toml
+      - name: Package portable build
+        shell: pwsh
+        run: |
+          $packageDir = "CeraChat-windows-portable"
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Copy-Item "src-tauri/target/release/cerachat.exe" "$packageDir/CeraChat.exe"
+          Compress-Archive -Path $packageDir -DestinationPath "$packageDir.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CeraChat-windows-portable
+          path: CeraChat-windows-portable.zip
+          if-no-files-found: error

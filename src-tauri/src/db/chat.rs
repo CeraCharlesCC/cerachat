@@ -31,7 +31,9 @@ pub fn list_conversations(db: &Database) -> AppResult<Vec<Conversation>> {
         let mut stmt = conn.prepare(
             "SELECT id,title,created_at,updated_at FROM conversations ORDER BY updated_at DESC",
         )?;
-        Ok(stmt.query_map([], row_conversation)?.collect::<Result<Vec<_>, _>>()?)
+        Ok(stmt
+            .query_map([], row_conversation)?
+            .collect::<Result<Vec<_>, _>>()?)
     })
 }
 
@@ -46,7 +48,12 @@ pub fn create_conversation(db: &Database) -> AppResult<Conversation> {
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO conversations(id,title,created_at,updated_at) VALUES(?1,?2,?3,?4)",
-            params![conversation.id, conversation.title, conversation.created_at, conversation.updated_at],
+            params![
+                conversation.id,
+                conversation.title,
+                conversation.created_at,
+                conversation.updated_at
+            ],
         )?;
         Ok(())
     })?;
@@ -66,7 +73,9 @@ pub fn get_messages(db: &Database, conversation_id: &str) -> AppResult<Vec<Messa
             "SELECT id,conversation_id,parent_id,role,content,include_next,created_at
              FROM messages WHERE conversation_id=?1 ORDER BY created_at ASC, id ASC",
         )?;
-        Ok(stmt.query_map([conversation_id], row_message)?.collect::<Result<Vec<_>, _>>()?)
+        Ok(stmt
+            .query_map([conversation_id], row_message)?
+            .collect::<Result<Vec<_>, _>>()?)
     })
 }
 
@@ -94,7 +103,9 @@ pub fn insert_message(
         let parent = get_message(db, parent_id)?
             .ok_or_else(|| AppError::Message("parent message not found".into()))?;
         if parent.conversation_id != conversation_id {
-            return Err(AppError::Message("parent message belongs to another conversation".into()));
+            return Err(AppError::Message(
+                "parent message belongs to another conversation".into(),
+            ));
         }
     }
 
@@ -168,7 +179,11 @@ pub fn delete_branch(db: &Database, message_id: &str) -> AppResult<()> {
     })
 }
 
-pub fn branch_to(db: &Database, leaf_id: Option<&str>, conversation_id: &str) -> AppResult<Vec<Message>> {
+pub fn branch_to(
+    db: &Database,
+    leaf_id: Option<&str>,
+    conversation_id: &str,
+) -> AppResult<Vec<Message>> {
     let Some(mut current_id) = leaf_id.map(str::to_string) else {
         return Ok(Vec::new());
     };
@@ -182,7 +197,9 @@ pub fn branch_to(db: &Database, leaf_id: Option<&str>, conversation_id: &str) ->
         let message = get_message(db, &current_id)?
             .ok_or_else(|| AppError::Message("history parent message not found".into()))?;
         if message.conversation_id != conversation_id {
-            return Err(AppError::Message("history parent belongs to another conversation".into()));
+            return Err(AppError::Message(
+                "history parent belongs to another conversation".into(),
+            ));
         }
         let parent = message.parent_id.clone();
         reversed.push(message);

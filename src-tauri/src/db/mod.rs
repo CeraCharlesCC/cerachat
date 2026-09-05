@@ -3,9 +3,9 @@ pub mod context;
 pub mod request;
 pub mod schema;
 
-use std::{path::PathBuf, sync::Mutex};
-use rusqlite::Connection;
 use crate::error::AppResult;
+use rusqlite::Connection;
+use std::{path::PathBuf, sync::Mutex};
 
 pub struct Database {
     pub path: PathBuf,
@@ -18,7 +18,10 @@ impl Database {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         schema::migrate(&conn)?;
-        Ok(Self { path, conn: Mutex::new(conn) })
+        Ok(Self {
+            path,
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> AppResult<T>) -> AppResult<T> {
@@ -26,7 +29,10 @@ impl Database {
         f(&conn)
     }
 
-    pub fn with_conn_mut<T>(&self, f: impl FnOnce(&mut Connection) -> AppResult<T>) -> AppResult<T> {
+    pub fn with_conn_mut<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> AppResult<T>,
+    ) -> AppResult<T> {
         let mut conn = self.conn.lock().expect("database mutex poisoned");
         f(&mut conn)
     }
@@ -34,5 +40,8 @@ impl Database {
 
 pub fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }

@@ -76,7 +76,9 @@ pub fn compile(
         current.push_str(&workspace.inside_current);
     }
     if current.is_empty() {
-        return Err(AppError::Message("request has no current user content".into()));
+        return Err(AppError::Message(
+            "request has no current user content".into(),
+        ));
     }
     messages.push(CanonicalMessage {
         role: "user".into(),
@@ -92,12 +94,19 @@ pub fn compile(
         max_output_tokens: provider.max_output_tokens,
         extra,
     };
-    let request_json = openai_request_json(&canonical)?;
+    let request_json = if provider.protocol == "openai_responses" {
+        responses_request_json(&canonical)?
+    } else {
+        openai_request_json(&canonical)?
+    };
     let request_sha256 = hex::encode(Sha256::digest(request_json.as_bytes()));
     let compiled_prompt = audit_prompt(&canonical);
 
     let system_tokens = estimate_tokens(&provider.system_text);
-    let history_tokens = history.iter().map(|message| estimate_tokens(&message.content)).sum();
+    let history_tokens = history
+        .iter()
+        .map(|message| estimate_tokens(&message.content))
+        .sum();
     let input_tokens = estimate_tokens(&args.input);
     let mut separator_tokens = 0;
     if !workspace.before_current.is_empty() {
@@ -146,12 +155,18 @@ fn select_history(
             let index = branch
                 .iter()
                 .position(|message| message.id == since_id)
-                .ok_or_else(|| AppError::Message("Since here message is not on the active branch".into()))?;
+                .ok_or_else(|| {
+                    AppError::Message("Since here message is not on the active branch".into())
+                })?;
             branch[index..].to_vec()
         }
         "selected" => branch,
         "no_history" => Vec::new(),
-        other => return Err(AppError::Message(format!("unsupported history mode: {other}"))),
+        other => {
+            return Err(AppError::Message(format!(
+                "unsupported history mode: {other}"
+            )))
+        }
     };
 
     Ok(selected
@@ -164,11 +179,19 @@ fn compile_workspace(db: &Database) -> AppResult<WorkspaceParts> {
     let mut parts = WorkspaceParts::default();
     let mut seen_hashes = HashSet::new();
 
-    for slice in db_context::list_slices(db)?.into_iter().filter(|slice| slice.enabled) {
+    for slice in db_context::list_slices(db)?
+        .into_iter()
+        .filter(|slice| slice.enabled)
+    {
         let source = db_context::get_source(db, &slice.source_id)?
             .ok_or_else(|| AppError::Message("workspace source not found".into()))?;
         let source_text = db_context::source_text(db, &slice.source_id)?;
-        let selected = slice_text(&source_text, &slice.range_type, slice.start_pos, slice.end_pos)?;
+        let selected = slice_text(
+            &source_text,
+            &slice.range_type,
+            slice.start_pos,
+            slice.end_pos,
+        )?;
         let wrapped = match slice.wrapper.as_str() {
             "raw" => selected,
             "labeled" => format!("{}\n{}", label_for_slice(&slice), selected),
@@ -183,7 +206,11 @@ fn compile_workspace(db: &Database) -> AppResult<WorkspaceParts> {
             "before_current" => parts.before_current.push_str(&wrapped),
             "inside_current" => parts.inside_current.push_str(&wrapped),
             "system" => parts.system.push_str(&wrapped),
-            other => return Err(AppError::Message(format!("unsupported insertion point: {other}"))),
+            other => {
+                return Err(AppError::Message(format!(
+                    "unsupported insertion point: {other}"
+                )))
+            }
         }
     }
     Ok(parts)
@@ -233,12 +260,46 @@ fn openai_request_json(request: &CanonicalRequest) -> AppResult<String> {
     if let Some(system) = &request.system {
         messages.push(serde_json::json!({ "role": "system", "content": system }));
     }
-    messages.extend(request.messages.iter().map(|message| {
-        serde_json::json!({ "role": message.role, "content": message.content })
-    }));
+    messages.extend(
+        request
+            .messages
+            .iter()
+            .map(|message| serde_json::json!({ "role": message.role, "content": message.content })),
+    );
     body.insert("messages".into(), Value::Array(messages));
     body.insert("stream".into(), Value::Bool(true));
     body.insert("max_tokens".into(), Value::from(request.max_output_tokens));
+    if let Some(temperature) = request.temperature {
+        body.insert("temperature".into(), Value::from(temperature));
+    }
+    for (key, value) in &request.extra {
+        body.insert(key.clone(), value.clone());
+    }
+    Ok(serde_json::to_string_pretty(&Value::Object(body))?)
+}
+
+pub fn responses_request_json(request: &CanonicalRequest) -> AppResult<String> {
+    let mut body = Map::new();
+    body.insert("model".into(), Value::String(request.model.clone()));
+    if let Some(system) = &request.system {
+        body.insert("instructions".into(), Value::String(system.clone()));
+    }
+    let input = request
+        .messages
+        .iter()
+        .map(|message| {
+            serde_json::json!({
+                "role": message.role,
+                "content": [{ "type": "input_text", "text": message.content }]
+            })
+        })
+        .collect::<Vec<_>>();
+    body.insert("input".into(), Value::Array(input));
+    body.insert("stream".into(), Value::Bool(true));
+    body.insert(
+        "max_output_tokens".into(),
+        Value::from(request.max_output_tokens),
+    );
     if let Some(temperature) = request.temperature {
         body.insert("temperature".into(), Value::from(temperature));
     }

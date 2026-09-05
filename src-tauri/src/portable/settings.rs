@@ -2,7 +2,10 @@ use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{error::{AppError, AppResult}, models::ProviderConfig};
+use crate::{
+    error::{AppError, AppResult},
+    models::ProviderConfig,
+};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SecretFile {
@@ -32,9 +35,17 @@ pub fn save(data_dir: &Path, provider: &ProviderConfig) -> AppResult<()> {
     }
     let mut public = provider.clone();
     public.api_key.clear();
-    write_atomic(&data_dir.join("settings.json"), &serde_json::to_vec_pretty(&public)?)?;
-    let secret = SecretFile { api_key: provider.api_key.clone() };
-    write_atomic(&data_dir.join("secrets.json"), &serde_json::to_vec_pretty(&secret)?)?;
+    write_atomic(
+        &data_dir.join("settings.json"),
+        &serde_json::to_vec_pretty(&public)?,
+    )?;
+    let secret = SecretFile {
+        api_key: provider.api_key.clone(),
+    };
+    write_atomic(
+        &data_dir.join("secrets.json"),
+        &serde_json::to_vec_pretty(&secret)?,
+    )?;
     Ok(())
 }
 

@@ -107,8 +107,14 @@ pub fn source_text(db: &Database, source_id: &str) -> AppResult<String> {
     })
 }
 
-pub fn source_lines(db: &Database, source_id: &str, start_line: usize, count: usize) -> AppResult<SourceLines> {
-    let source = get_source(db, source_id)?.ok_or_else(|| AppError::Message("workspace source not found".into()))?;
+pub fn source_lines(
+    db: &Database,
+    source_id: &str,
+    start_line: usize,
+    count: usize,
+) -> AppResult<SourceLines> {
+    let source = get_source(db, source_id)?
+        .ok_or_else(|| AppError::Message("workspace source not found".into()))?;
     let text = source_text(db, source_id)?;
     let start = start_line.max(1);
     let count = count.clamp(1, 500);
@@ -181,13 +187,21 @@ pub fn add_slice(db: &Database, args: AddSliceArgs) -> AppResult<ContextSlice> {
     if !matches!(args.wrapper.as_str(), "raw" | "labeled") {
         return Err(AppError::Message("invalid context wrapper".into()));
     }
-    if !matches!(args.insert_at.as_str(), "before_current" | "inside_current" | "before_history" | "system") {
+    if !matches!(
+        args.insert_at.as_str(),
+        "before_current" | "inside_current" | "before_history" | "system"
+    ) {
         return Err(AppError::Message("invalid context insertion point".into()));
     }
-    let source = get_source(db, &args.source_id)?.ok_or_else(|| AppError::Message("workspace source not found".into()))?;
+    let source = get_source(db, &args.source_id)?
+        .ok_or_else(|| AppError::Message("workspace source not found".into()))?;
     let id = Uuid::new_v4().to_string();
     let sort_order = db.with_conn(|conn| {
-        Ok(conn.query_row("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM context_slices", [], |row| row.get(0))?)
+        Ok(conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM context_slices",
+            [],
+            |row| row.get(0),
+        )?)
     })?;
     db.with_conn(|conn| {
         conn.execute(
@@ -225,7 +239,10 @@ pub fn update_slice(db: &Database, args: UpdateSliceArgs) -> AppResult<()> {
     if !matches!(wrapper.as_str(), "raw" | "labeled") {
         return Err(AppError::Message("invalid context wrapper".into()));
     }
-    if !matches!(insert_at.as_str(), "before_current" | "inside_current" | "before_history" | "system") {
+    if !matches!(
+        insert_at.as_str(),
+        "before_current" | "inside_current" | "before_history" | "system"
+    ) {
         return Err(AppError::Message("invalid context insertion point".into()));
     }
     db.with_conn(|conn| {

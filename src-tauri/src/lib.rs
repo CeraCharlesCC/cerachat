@@ -23,7 +23,9 @@ fn command_error(error: impl std::fmt::Display) -> String {
 }
 
 fn data_dir(db: &Database) -> &std::path::Path {
-    db.path.parent().unwrap_or_else(|| std::path::Path::new("."))
+    db.path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
 }
 
 #[tauri::command]
@@ -39,7 +41,10 @@ fn bootstrap(state: State<'_, AppState>) -> Result<models::BootstrapState, Strin
 }
 
 #[tauri::command]
-fn get_messages(state: State<'_, AppState>, conversation_id: String) -> Result<Vec<models::Message>, String> {
+fn get_messages(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<models::Message>, String> {
     db::chat::get_messages(&state.db, &conversation_id).map_err(command_error)
 }
 
@@ -54,7 +59,11 @@ fn delete_conversation(state: State<'_, AppState>, conversation_id: String) -> R
 }
 
 #[tauri::command]
-fn set_message_included(state: State<'_, AppState>, message_id: String, included: bool) -> Result<(), String> {
+fn set_message_included(
+    state: State<'_, AppState>,
+    message_id: String,
+    included: bool,
+) -> Result<(), String> {
     db::chat::set_message_included(&state.db, &message_id, included).map_err(command_error)
 }
 
@@ -64,7 +73,10 @@ fn delete_branch(state: State<'_, AppState>, message_id: String) -> Result<(), S
 }
 
 #[tauri::command]
-fn import_sources(state: State<'_, AppState>, paths: Vec<String>) -> Result<Vec<models::WorkspaceSource>, String> {
+fn import_sources(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<models::WorkspaceSource>, String> {
     context::import_paths(&state.db, &paths).map_err(command_error)
 }
 
@@ -84,7 +96,10 @@ fn get_source_lines(
 }
 
 #[tauri::command]
-fn add_context_slice(state: State<'_, AppState>, args: AddSliceArgs) -> Result<models::ContextSlice, String> {
+fn add_context_slice(
+    state: State<'_, AppState>,
+    args: AddSliceArgs,
+) -> Result<models::ContextSlice, String> {
     db::context::add_slice(&state.db, args).map_err(command_error)
 }
 
@@ -99,7 +114,10 @@ fn delete_context_slice(state: State<'_, AppState>, slice_id: String) -> Result<
 }
 
 #[tauri::command]
-fn save_provider(state: State<'_, AppState>, provider: models::ProviderConfig) -> Result<(), String> {
+fn save_provider(
+    state: State<'_, AppState>,
+    provider: models::ProviderConfig,
+) -> Result<(), String> {
     // Saving provider settings is intentionally local-only: no validation or model-fetch request.
     portable::settings::save(data_dir(&state.db), &provider).map_err(command_error)
 }
@@ -110,7 +128,8 @@ fn compile_request(
     args: CompileRequestArgs,
 ) -> Result<models::RequestPreview, String> {
     let provider = portable::settings::load(data_dir(&state.db)).map_err(command_error)?;
-    let compiled = context::compiler::compile(&state.db, &provider, &args).map_err(command_error)?;
+    let compiled =
+        context::compiler::compile(&state.db, &provider, &args).map_err(command_error)?;
     Ok(models::RequestPreview {
         request_json: compiled.request_json,
         compiled_prompt: compiled.compiled_prompt,
@@ -126,7 +145,8 @@ async fn send_message(
     args: CompileRequestArgs,
 ) -> Result<String, String> {
     let provider = portable::settings::load(data_dir(&state.db)).map_err(command_error)?;
-    let compiled = context::compiler::compile(&state.db, &provider, &args).map_err(command_error)?;
+    let compiled =
+        context::compiler::compile(&state.db, &provider, &args).map_err(command_error)?;
     let user_message = db::chat::insert_message(
         &state.db,
         &args.conversation_id,

@@ -37,7 +37,11 @@ pub fn insert_request_log(
     })
 }
 
-pub fn attach_assistant(db: &Database, request_id: &str, assistant_message_id: &str) -> AppResult<()> {
+pub fn attach_assistant(
+    db: &Database,
+    request_id: &str,
+    assistant_message_id: &str,
+) -> AppResult<()> {
     db.with_conn(|conn| {
         conn.execute(
             "UPDATE request_logs SET assistant_message_id=?2 WHERE id=?1",

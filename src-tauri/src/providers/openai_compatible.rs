@@ -4,7 +4,7 @@ use reqwest::Client;
 use crate::{
     error::{AppError, AppResult},
     models::ProviderConfig,
-    stream::sse::{openai_delta, SseParser},
+    stream::sse::{openai_delta, responses_delta, SseParser},
 };
 
 pub fn endpoint(base_url: &str) -> String {
@@ -13,6 +13,15 @@ pub fn endpoint(base_url: &str) -> String {
         base.to_string()
     } else {
         format!("{base}/chat/completions")
+    }
+}
+
+pub fn responses_endpoint(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if base.ends_with("/responses") {
+        base.to_string()
+    } else {
+        format!("{base}/responses")
     }
 }
 
@@ -28,8 +37,13 @@ where
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .build()?;
+    let is_responses = provider.protocol == "openai_responses";
     let mut request = client
-        .post(endpoint(&provider.base_url))
+        .post(if is_responses {
+            responses_endpoint(&provider.base_url)
+        } else {
+            endpoint(&provider.base_url)
+        })
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(request_json);
     if !provider.api_key.is_empty() {
@@ -42,7 +56,9 @@ where
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         let short: String = body.chars().take(4096).collect();
-        return Err(AppError::Message(format!("provider returned {status}: {short}")));
+        return Err(AppError::Message(format!(
+            "provider returned {status}: {short}"
+        )));
     }
 
     let mut bytes = response.bytes_stream();
@@ -58,7 +74,12 @@ where
                 saw_done = true;
                 break;
             }
-            if let Some(delta) = openai_delta(&data)? {
+            let delta = if is_responses {
+                responses_delta(&data)?
+            } else {
+                openai_delta(&data)?
+            };
+            if let Some(delta) = delta {
                 output.push_str(&delta);
                 on_delta(&delta)?;
             }
@@ -72,7 +93,12 @@ where
         if let Some(data) = parser.finish() {
             saw_event = true;
             if data.trim() != "[DONE]" {
-                if let Some(delta) = openai_delta(&data)? {
+                let delta = if is_responses {
+                    responses_delta(&data)?
+                } else {
+                    openai_delta(&data)?
+                };
+                if let Some(delta) = delta {
                     output.push_str(&delta);
                     on_delta(&delta)?;
                 }
@@ -81,7 +107,9 @@ where
     }
 
     if !saw_event {
-        return Err(AppError::Message("provider response was not an SSE stream".into()));
+        return Err(AppError::Message(
+            "provider response was not an SSE stream".into(),
+        ));
     }
 
     Ok(output)

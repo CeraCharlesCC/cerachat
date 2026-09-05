@@ -18,7 +18,10 @@ pub fn import_paths(db: &Database, paths: &[String]) -> AppResult<Vec<WorkspaceS
         if !path.is_file() {
             continue;
         }
-        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
         if extension.eq_ignore_ascii_case("zip") {
             let archive_name = path
                 .file_name()

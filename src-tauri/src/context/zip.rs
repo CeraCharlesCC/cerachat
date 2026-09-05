@@ -31,9 +31,8 @@ pub fn extract_text_entries(path: &Path) -> AppResult<Vec<ZipTextEntry>> {
 
         let mut bytes = Vec::with_capacity(entry.size().min(8 * 1024 * 1024) as usize);
         entry.read_to_end(&mut bytes)?;
-        let text = decode_text(&bytes).map_err(|error| {
-            AppError::Message(format!("{}: {error}", enclosed.display()))
-        })?;
+        let text = decode_text(&bytes)
+            .map_err(|error| AppError::Message(format!("{}: {error}", enclosed.display())))?;
         entries.push(ZipTextEntry {
             archive_path: enclosed.to_string_lossy().replace('\\', "/"),
             text,
