@@ -75,7 +75,10 @@ pub fn list_sources(db: &Database) -> AppResult<Vec<WorkspaceSource>> {
              FROM workspace_sources ws JOIN blobs b ON b.hash=ws.blob_hash
              ORDER BY ws.created_at ASC",
         )?;
-        Ok(stmt.query_map([], row_source)?.collect::<Result<Vec<_>, _>>()?)
+        let sources = stmt
+            .query_map([], row_source)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(sources)
     })
 }
 
@@ -167,7 +170,10 @@ pub fn list_slices(db: &Database) -> AppResult<Vec<ContextSlice>> {
             "SELECT cs.id,cs.source_id,ws.display_name,cs.range_type,cs.start_pos,cs.end_pos,cs.enabled,cs.sort_order,cs.wrapper,cs.insert_at,ws.blob_hash
              FROM context_slices cs JOIN workspace_sources ws ON ws.id=cs.source_id ORDER BY cs.sort_order ASC, cs.id ASC",
         )?;
-        Ok(stmt.query_map([], row_slice_base)?.collect::<Result<Vec<_>, _>>()?)
+        let rows = stmt
+            .query_map([], row_slice_base)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     })?;
 
     rows.into_iter()

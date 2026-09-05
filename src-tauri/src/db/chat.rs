@@ -31,9 +31,10 @@ pub fn list_conversations(db: &Database) -> AppResult<Vec<Conversation>> {
         let mut stmt = conn.prepare(
             "SELECT id,title,created_at,updated_at FROM conversations ORDER BY updated_at DESC",
         )?;
-        Ok(stmt
+        let conversations = stmt
             .query_map([], row_conversation)?
-            .collect::<Result<Vec<_>, _>>()?)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(conversations)
     })
 }
 
@@ -73,9 +74,10 @@ pub fn get_messages(db: &Database, conversation_id: &str) -> AppResult<Vec<Messa
             "SELECT id,conversation_id,parent_id,role,content,include_next,created_at
              FROM messages WHERE conversation_id=?1 ORDER BY created_at ASC, id ASC",
         )?;
-        Ok(stmt
+        let messages = stmt
             .query_map([conversation_id], row_message)?
-            .collect::<Result<Vec<_>, _>>()?)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(messages)
     })
 }
 
