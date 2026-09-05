@@ -9,6 +9,11 @@ edition = "2021"
 name = "cerachat_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# The Tauri CLI enables this for production builds. Direct cargo build callers
+# (such as the portable Windows CI job) must opt in explicitly as well.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
