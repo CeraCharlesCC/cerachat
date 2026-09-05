@@ -9,6 +9,7 @@ import type {
   Conversation,
   Message,
   ProviderConfig,
+  RegenerateArgs,
   SourceLines,
   StreamPayload,
   UpdateSliceArgs,
@@ -160,7 +161,7 @@ export async function compileRequest(args: CompileRequestArgs): Promise<ReturnTy
     const history = browserMessages.filter((message) => message.conversation_id === args.conversationId && message.include_next)
     const historyTokens = history.reduce((sum, message) => sum + Math.ceil(message.content.length / 4), 0)
     const workspaceTokens = browserBootstrap.slices.filter((slice) => slice.enabled).reduce((sum, slice) => sum + slice.estimated_tokens, 0)
-    return demoPreview(args.input, historyTokens, workspaceTokens)
+    return demoPreview(args.input, historyTokens, workspaceTokens, browserBootstrap.provider)
   }
   return call('compile_request', { args })
 }
@@ -204,6 +205,35 @@ export async function sendMessage(args: CompileRequestArgs): Promise<string> {
       content: text,
       include_next: true,
       created_at: now + 1,
+    }
+    browserMessages.push(assistant)
+    emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'done', assistant_message: assistant })
+  })
+  return requestId
+}
+
+export async function regenerateResponse(args: RegenerateArgs): Promise<string> {
+  if (isTauri()) return call<string>('regenerate_response', { args })
+
+  const user = browserMessages.find((message) => message.id === args.userMessageId)
+  if (!user || user.conversation_id !== args.conversationId || user.role !== 'user') {
+    throw new Error('The user message for this response is no longer available')
+  }
+
+  const requestId = crypto.randomUUID()
+  const now = Date.now()
+  emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'started' })
+  const text = 'This is a locally simulated regenerated response. The desktop build reuses the selected user message, sends one new provider request, and stores the result as a sibling branch.'
+  queueMicrotask(() => emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'delta', text }))
+  queueMicrotask(() => {
+    const assistant: Message = {
+      id: crypto.randomUUID(),
+      conversation_id: args.conversationId,
+      parent_id: user.id,
+      role: 'assistant',
+      content: text,
+      include_next: true,
+      created_at: now,
     }
     browserMessages.push(assistant)
     emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'done', assistant_message: assistant })

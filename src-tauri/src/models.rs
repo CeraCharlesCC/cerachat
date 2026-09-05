@@ -143,6 +143,15 @@ pub struct CompileRequestArgs {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RegenerateArgs {
+    pub conversation_id: String,
+    pub user_message_id: String,
+    pub history_mode: String,
+    pub since_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AddSliceArgs {
     pub source_id: String,
     pub range_type: String,

@@ -7,22 +7,19 @@ use crate::{
     stream::sse::{openai_delta, responses_delta, SseParser},
 };
 
-pub fn endpoint(base_url: &str) -> String {
+fn api_root(base_url: &str) -> &str {
     let base = base_url.trim_end_matches('/');
-    if base.ends_with("/chat/completions") {
-        base.to_string()
-    } else {
-        format!("{base}/chat/completions")
-    }
+    base.strip_suffix("/chat/completions")
+        .or_else(|| base.strip_suffix("/responses"))
+        .unwrap_or(base)
+}
+
+pub fn endpoint(base_url: &str) -> String {
+    format!("{}/chat/completions", api_root(base_url))
 }
 
 pub fn responses_endpoint(base_url: &str) -> String {
-    let base = base_url.trim_end_matches('/');
-    if base.ends_with("/responses") {
-        base.to_string()
-    } else {
-        format!("{base}/responses")
-    }
+    format!("{}/responses", api_root(base_url))
 }
 
 pub async fn stream_once<F>(
@@ -37,7 +34,15 @@ where
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .build()?;
-    let is_responses = provider.protocol == "openai_responses";
+    let is_responses = match provider.protocol.as_str() {
+        "openai_chat_completions" => false,
+        "openai_responses" => true,
+        other => {
+            return Err(AppError::Message(format!(
+                "unsupported provider protocol: {other}"
+            )))
+        }
+    };
     let mut request = client
         .post(if is_responses {
             responses_endpoint(&provider.base_url)
@@ -113,4 +118,25 @@ where
     }
 
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{endpoint, responses_endpoint};
+
+    #[test]
+    fn switches_between_known_openai_endpoints() {
+        assert_eq!(
+            endpoint("https://api.example.test/v1/responses"),
+            "https://api.example.test/v1/chat/completions"
+        );
+        assert_eq!(
+            responses_endpoint("https://api.example.test/v1/chat/completions/"),
+            "https://api.example.test/v1/responses"
+        );
+        assert_eq!(
+            responses_endpoint("https://api.example.test/v1"),
+            "https://api.example.test/v1/responses"
+        );
+    }
 }

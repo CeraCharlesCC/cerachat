@@ -28,6 +28,15 @@ pub fn load(data_dir: &Path) -> AppResult<ProviderConfig> {
 }
 
 pub fn save(data_dir: &Path, provider: &ProviderConfig) -> AppResult<()> {
+    if !matches!(
+        provider.protocol.as_str(),
+        "openai_chat_completions" | "openai_responses"
+    ) {
+        return Err(AppError::Message(format!(
+            "unsupported provider protocol: {}",
+            provider.protocol
+        )));
+    }
     if provider.api_key_storage != "plain_portable" {
         return Err(AppError::Message(
             "Windows DPAPI storage is not enabled in this v1 build; choose Plain portable configuration".into(),

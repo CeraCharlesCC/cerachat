@@ -17,10 +17,17 @@ use super::text::{estimate_tokens, slice_text};
 const RESERVED_OVERRIDE_KEYS: &[&str] = &[
     "model",
     "messages",
+    "input",
+    "instructions",
     "stream",
     "max_tokens",
     "max_completion_tokens",
+    "max_output_tokens",
     "temperature",
+    "previous_response_id",
+    "conversation",
+    "prompt",
+    "background",
     "tools",
     "tool_choice",
     "functions",
@@ -94,10 +101,14 @@ pub fn compile(
         max_output_tokens: provider.max_output_tokens,
         extra,
     };
-    let request_json = if provider.protocol == "openai_responses" {
-        responses_request_json(&canonical)?
-    } else {
-        openai_request_json(&canonical)?
+    let request_json = match provider.protocol.as_str() {
+        "openai_chat_completions" => openai_request_json(&canonical)?,
+        "openai_responses" => responses_request_json(&canonical)?,
+        other => {
+            return Err(AppError::Message(format!(
+                "unsupported provider protocol: {other}"
+            )))
+        }
     };
     let request_sha256 = hex::encode(Sha256::digest(request_json.as_bytes()));
     let compiled_prompt = audit_prompt(&canonical);

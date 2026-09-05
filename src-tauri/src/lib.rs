@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use db::Database;
-use models::{AddSliceArgs, CompileRequestArgs, StreamPayload, UpdateSliceArgs};
+use models::{AddSliceArgs, CompileRequestArgs, RegenerateArgs, StreamPayload, UpdateSliceArgs};
 
 struct AppState {
     db: Arc<Database>,
@@ -26,6 +26,117 @@ fn data_dir(db: &Database) -> &std::path::Path {
     db.path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
+}
+
+fn start_provider_request(
+    app: &AppHandle,
+    db: Arc<Database>,
+    provider: models::ProviderConfig,
+    compiled: models::CompiledRequest,
+    conversation_id: String,
+    user_message: models::Message,
+    emit_user_message: bool,
+) -> Result<String, String> {
+    let request_id = Uuid::new_v4().to_string();
+    db::request::insert_request_log(
+        &db,
+        &request_id,
+        &conversation_id,
+        &user_message.id,
+        &compiled,
+    )
+    .map_err(command_error)?;
+
+    let _ = app.emit(
+        "chat-stream",
+        StreamPayload {
+            request_id: request_id.clone(),
+            conversation_id: conversation_id.clone(),
+            kind: "started".into(),
+            text: None,
+            error: None,
+            assistant_message: None,
+            user_message: emit_user_message.then_some(user_message.clone()),
+        },
+    );
+
+    let app_handle = app.clone();
+    let request_id_for_task = request_id.clone();
+    let request_json = compiled.request_json;
+    tauri::async_runtime::spawn(async move {
+        let result = providers::openai_compatible::stream_once(&provider, request_json, |delta| {
+            let _ = app_handle.emit(
+                "chat-stream",
+                StreamPayload {
+                    request_id: request_id_for_task.clone(),
+                    conversation_id: conversation_id.clone(),
+                    kind: "delta".into(),
+                    text: Some(delta.to_string()),
+                    error: None,
+                    assistant_message: None,
+                    user_message: None,
+                },
+            );
+            Ok(())
+        })
+        .await;
+
+        match result {
+            Ok(output) => match db::chat::insert_message(
+                &db,
+                &conversation_id,
+                Some(&user_message.id),
+                "assistant",
+                &output,
+            ) {
+                Ok(assistant) => {
+                    let _ = db::request::attach_assistant(&db, &request_id_for_task, &assistant.id);
+                    let _ = app_handle.emit(
+                        "chat-stream",
+                        StreamPayload {
+                            request_id: request_id_for_task,
+                            conversation_id,
+                            kind: "done".into(),
+                            text: None,
+                            error: None,
+                            assistant_message: Some(assistant),
+                            user_message: None,
+                        },
+                    );
+                }
+                Err(error) => {
+                    let _ = app_handle.emit(
+                        "chat-stream",
+                        StreamPayload {
+                            request_id: request_id_for_task,
+                            conversation_id,
+                            kind: "error".into(),
+                            text: None,
+                            error: Some(error.to_string()),
+                            assistant_message: None,
+                            user_message: None,
+                        },
+                    );
+                }
+            },
+            Err(error) => {
+                let _ = app_handle.emit(
+                    "chat-stream",
+                    StreamPayload {
+                        request_id: request_id_for_task,
+                        conversation_id,
+                        kind: "error".into(),
+                        text: None,
+                        error: Some(error.to_string()),
+                        assistant_message: None,
+                        user_message: None,
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(request_id)
 }
 
 #[tauri::command]
@@ -155,108 +266,50 @@ async fn send_message(
         &args.input,
     )
     .map_err(command_error)?;
-    let request_id = Uuid::new_v4().to_string();
-    db::request::insert_request_log(
-        &state.db,
-        &request_id,
-        &args.conversation_id,
-        &user_message.id,
-        &compiled,
+    start_provider_request(
+        &app,
+        state.db.clone(),
+        provider,
+        compiled,
+        args.conversation_id,
+        user_message,
+        true,
     )
-    .map_err(command_error)?;
+}
 
-    let _ = app.emit(
-        "chat-stream",
-        StreamPayload {
-            request_id: request_id.clone(),
-            conversation_id: args.conversation_id.clone(),
-            kind: "started".into(),
-            text: None,
-            error: None,
-            assistant_message: None,
-            user_message: Some(user_message.clone()),
-        },
-    );
+#[tauri::command]
+async fn regenerate_response(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    args: RegenerateArgs,
+) -> Result<String, String> {
+    let user_message = db::chat::get_message(&state.db, &args.user_message_id)
+        .map_err(command_error)?
+        .ok_or_else(|| "user message not found".to_string())?;
+    if user_message.conversation_id != args.conversation_id || user_message.role != "user" {
+        return Err("regeneration target must be a user message in this conversation".into());
+    }
 
-    let db = state.db.clone();
-    let app_handle = app.clone();
-    let request_id_for_task = request_id.clone();
-    let conversation_id = args.conversation_id.clone();
-    let request_json = compiled.request_json.clone();
-    tauri::async_runtime::spawn(async move {
-        let result = providers::openai_compatible::stream_once(&provider, request_json, |delta| {
-            let _ = app_handle.emit(
-                "chat-stream",
-                StreamPayload {
-                    request_id: request_id_for_task.clone(),
-                    conversation_id: conversation_id.clone(),
-                    kind: "delta".into(),
-                    text: Some(delta.to_string()),
-                    error: None,
-                    assistant_message: None,
-                    user_message: None,
-                },
-            );
-            Ok(())
-        })
-        .await;
+    let compile_args = CompileRequestArgs {
+        conversation_id: args.conversation_id.clone(),
+        parent_id: user_message.parent_id.clone(),
+        input: user_message.content.clone(),
+        history_mode: args.history_mode,
+        since_message_id: args.since_message_id,
+    };
+    let provider = portable::settings::load(data_dir(&state.db)).map_err(command_error)?;
+    let compiled =
+        context::compiler::compile(&state.db, &provider, &compile_args).map_err(command_error)?;
 
-        match result {
-            Ok(output) => match db::chat::insert_message(
-                &db,
-                &conversation_id,
-                Some(&user_message.id),
-                "assistant",
-                &output,
-            ) {
-                Ok(assistant) => {
-                    let _ = db::request::attach_assistant(&db, &request_id_for_task, &assistant.id);
-                    let _ = app_handle.emit(
-                        "chat-stream",
-                        StreamPayload {
-                            request_id: request_id_for_task,
-                            conversation_id,
-                            kind: "done".into(),
-                            text: None,
-                            error: None,
-                            assistant_message: Some(assistant),
-                            user_message: None,
-                        },
-                    );
-                }
-                Err(error) => {
-                    let _ = app_handle.emit(
-                        "chat-stream",
-                        StreamPayload {
-                            request_id: request_id_for_task,
-                            conversation_id,
-                            kind: "error".into(),
-                            text: None,
-                            error: Some(error.to_string()),
-                            assistant_message: None,
-                            user_message: None,
-                        },
-                    );
-                }
-            },
-            Err(error) => {
-                let _ = app_handle.emit(
-                    "chat-stream",
-                    StreamPayload {
-                        request_id: request_id_for_task,
-                        conversation_id,
-                        kind: "error".into(),
-                        text: None,
-                        error: Some(error.to_string()),
-                        assistant_message: None,
-                        user_message: None,
-                    },
-                );
-            }
-        }
-    });
-
-    Ok(request_id)
+    start_provider_request(
+        &app,
+        state.db.clone(),
+        provider,
+        compiled,
+        args.conversation_id,
+        user_message,
+        false,
+    )
 }
 
 pub fn run() {
@@ -281,6 +334,7 @@ pub fn run() {
             save_provider,
             compile_request,
             send_message,
+            regenerate_response,
         ])
         .run(tauri::generate_context!())
         .expect("tauri error");

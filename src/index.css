@@ -25,3 +25,22 @@ body { overflow: hidden; }
 button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid #696961; outline-offset: 2px; }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #e7e7e2;
+    background: #151515;
+    --bg: #151515;
+    --panel: #1d1d1d;
+    --panel-soft: #252525;
+    --line: #353535;
+    --line-strong: #4a4a4a;
+    --text: #e7e7e2;
+    --muted: #a2a29a;
+    --accent: #ededeb;
+    --accent-soft: #303030;
+    --danger: #ef8b7d;
+    --user: #252525;
+    --shadow: 0 18px 60px rgba(0, 0, 0, .45);
+  }
+}

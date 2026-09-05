@@ -57,29 +57,37 @@ export function demoSourceLines(sourceId: string, startLine: number, count: numb
   return { source_id: sourceId, start_line: startLine, total_lines: total, lines }
 }
 
-export function demoPreview(input: string, historyTokens: number, workspaceTokens: number): RequestPreview {
-  const request = {
-    model: demoProvider.model,
-    messages: [
-      { role: 'system', content: demoProvider.system_text },
-      { role: 'user', content: `[compiled workspace context]${demoProvider.context_separator}${input}` },
-    ],
-    stream: true,
-    max_tokens: demoProvider.max_output_tokens,
-    reasoning_effort: 'high',
-  }
+export function demoPreview(input: string, historyTokens: number, workspaceTokens: number, provider = demoProvider): RequestPreview {
+  const compiledInput = `[compiled workspace context]${provider.context_separator}${input}`
+  const request = provider.protocol === 'openai_responses'
+    ? {
+        model: provider.model,
+        instructions: provider.system_text,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: compiledInput }] }],
+        stream: true,
+        max_output_tokens: provider.max_output_tokens,
+      }
+    : {
+        model: provider.model,
+        messages: [
+          { role: 'system', content: provider.system_text },
+          { role: 'user', content: compiledInput },
+        ],
+        stream: true,
+        max_tokens: provider.max_output_tokens,
+      }
   return {
     request_json: JSON.stringify(request, null, 2),
-    compiled_prompt: `[compiled workspace context]${demoProvider.context_separator}${input}`,
+    compiled_prompt: compiledInput,
     request_sha256: 'browser-demo-preview',
     breakdown: {
-      system_tokens: Math.ceil(demoProvider.system_text.length / 4),
+      system_tokens: Math.ceil(provider.system_text.length / 4),
       history_tokens: historyTokens,
       workspace_tokens: workspaceTokens,
       input_tokens: Math.ceil(input.length / 4),
       estimated_input_tokens: historyTokens + workspaceTokens + Math.ceil(input.length / 4),
-      configured_context: demoProvider.context_window,
-      max_output_tokens: demoProvider.max_output_tokens,
+      configured_context: provider.context_window,
+      max_output_tokens: provider.max_output_tokens,
     },
   }
 }

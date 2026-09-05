@@ -82,18 +82,32 @@ pub fn responses_delta(data: &str) -> AppResult<Option<String>> {
     if let Some(error) = value.get("error") {
         return Err(AppError::Message(format!("provider stream error: {error}")));
     }
-    Ok(value
-        .get("type")
-        .and_then(|kind| kind.as_str())
-        .filter(|kind| *kind == "response.output_text.delta")
-        .and_then(|_| value.get("delta"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string))
+    match value.get("type").and_then(serde_json::Value::as_str) {
+        Some("error") => Err(AppError::Message(format!(
+            "provider stream error: {}",
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown Responses API error")
+        ))),
+        Some("response.failed") => Err(AppError::Message(format!(
+            "provider stream error: {}",
+            value
+                .pointer("/response/error/message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Responses API request failed")
+        ))),
+        Some("response.output_text.delta" | "response.refusal.delta") => Ok(value
+            .get("delta")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)),
+        _ => Ok(None),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{openai_delta, SseParser};
+    use super::{openai_delta, responses_delta, SseParser};
 
     #[test]
     fn parses_fragmented_events() {
@@ -105,5 +119,32 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(openai_delta(&events[0]).unwrap().as_deref(), Some("hello"));
         assert_eq!(openai_delta(&events[1]).unwrap(), None);
+    }
+
+    #[test]
+    fn parses_responses_text_and_refusal_deltas() {
+        assert_eq!(
+            responses_delta(r#"{"type":"response.output_text.delta","delta":"hello"}"#)
+                .unwrap()
+                .as_deref(),
+            Some("hello")
+        );
+        assert_eq!(
+            responses_delta(r#"{"type":"response.refusal.delta","delta":"sorry"}"#)
+                .unwrap()
+                .as_deref(),
+            Some("sorry")
+        );
+    }
+
+    #[test]
+    fn surfaces_responses_failures() {
+        assert!(
+            responses_delta(r#"{"type":"error","code":"bad_request","message":"nope"}"#).is_err()
+        );
+        assert!(responses_delta(
+            r#"{"type":"response.failed","response":{"error":{"message":"failed"}}}"#
+        )
+        .is_err());
     }
 }
