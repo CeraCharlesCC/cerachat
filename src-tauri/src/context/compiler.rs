@@ -127,7 +127,6 @@ pub fn compile(
     };
 
     Ok(CompiledRequest {
-        canonical,
         request_json,
         compiled_prompt,
         request_sha256,

@@ -180,7 +180,6 @@ pub struct CanonicalRequest {
 
 #[derive(Debug, Clone)]
 pub struct CompiledRequest {
-    pub canonical: CanonicalRequest,
     pub request_json: String,
     pub compiled_prompt: String,
     pub request_sha256: String,
