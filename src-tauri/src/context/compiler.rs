@@ -313,7 +313,7 @@ fn audit_prompt(request: &CanonicalRequest) -> String {
     if let Some(system) = &request.system {
         output.push_str("[system]\n");
         output.push_str(system);
-        output.push_str("\n");
+        output.push('\n');
     }
     for message in &request.messages {
         output.push('[');

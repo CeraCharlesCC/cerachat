@@ -44,7 +44,7 @@ pub fn line_count(text: &str) -> i64 {
 
 pub fn estimate_tokens(text: &str) -> u64 {
     let chars = text.chars().count() as u64;
-    (chars + 3) / 4
+    chars.div_ceil(4)
 }
 
 pub fn slice_text(
