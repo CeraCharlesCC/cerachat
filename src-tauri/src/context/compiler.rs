@@ -297,12 +297,7 @@ pub fn responses_request_json(request: &CanonicalRequest) -> AppResult<String> {
     let input = request
         .messages
         .iter()
-        .map(|message| {
-            serde_json::json!({
-                "role": message.role,
-                "content": [{ "type": "input_text", "text": message.content }]
-            })
-        })
+        .map(|message| serde_json::json!({ "role": message.role, "content": message.content }))
         .collect::<Vec<_>>();
     body.insert("input".into(), Value::Array(input));
     body.insert("stream".into(), Value::Bool(true));
