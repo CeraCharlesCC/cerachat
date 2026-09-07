@@ -14,12 +14,13 @@ export function MessageActions({ message, copied, disabled, onIncludedChange, on
   onDelete: () => void
 }) {
   return (
-    <div className={`flex min-h-8 items-center gap-0.5 text-muted-foreground opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+    <div className={`message-actions flex min-h-8 items-center gap-0.5 text-muted-foreground transition-opacity ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
       <button
         type="button"
-        className="mr-1 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-2 text-[11px] hover:bg-accent hover:text-foreground"
+        className="mr-1 inline-flex h-7 w-28 cursor-pointer items-center gap-1.5 rounded-full px-2 text-[11px] hover:bg-accent hover:text-foreground"
         aria-pressed={message.include_next}
         title="Include this message in selected/future history modes"
+        disabled={disabled}
         onClick={() => onIncludedChange(!message.include_next)}
       >
         <span className={`grid size-3.5 place-items-center rounded-full border ${message.include_next ? 'border-primary bg-primary text-primary-foreground' : 'border-border'}`}>{message.include_next && <Check size={10} strokeWidth={3} />}</span>
@@ -37,7 +38,7 @@ export function MessageActions({ message, copied, disabled, onIncludedChange, on
         <summary className="grid size-7 cursor-pointer list-none place-items-center rounded-full hover:bg-accent hover:text-foreground" aria-label="More message actions" title="More message actions"><MoreHorizontal size={16} /></summary>
         <div className={`absolute z-20 mt-1 min-w-44 rounded-xl border border-border/70 bg-popover p-1.5 text-popover-foreground shadow-lg ${message.role === 'user' ? 'right-0' : 'left-0'}`}>
           <span className="block px-2 py-1 text-[10px] text-muted-foreground">Message {shortId(message.id)}</span>
-          <Button variant="destructive" size="sm" className="w-full justify-start" onClick={onDelete}><Trash2 size={14} /> Delete branch</Button>
+          <Button variant="destructive" size="sm" className="w-full justify-start" disabled={disabled} onClick={onDelete}><Trash2 size={14} /> Delete branch</Button>
         </div>
       </details>
     </div>

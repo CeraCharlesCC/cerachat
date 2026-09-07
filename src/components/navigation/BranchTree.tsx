@@ -16,12 +16,14 @@ export function BranchTree({ messages, activeLeafId, onSelect }: { messages: Mes
   const byId = new Map(messages.map((message) => [message.id, message]))
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+    <div className="min-h-0 flex-1 scroll-stable overflow-y-auto px-2 pb-3">
       {messages.map((message) => (
         <button
           key={message.id}
           className={`flex h-8 w-full items-center rounded-md pr-2 text-left text-xs transition-colors hover:bg-muted focus-visible:bg-muted ${message.id === activeLeafId ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
-          style={{ paddingLeft: `${10 + depthFor(message, byId) * 12}px` }}
+          style={{ paddingLeft: `${10 + Math.min(depthFor(message, byId), 8) * 12}px` }}
+          aria-current={message.id === activeLeafId ? 'true' : undefined}
+          title={message.content}
           onClick={() => onSelect(message.id)}
         >
           <span className={`mr-2 size-1.5 shrink-0 rounded-full ${message.role === 'assistant' ? 'bg-foreground' : 'bg-muted-foreground/70'}`} />

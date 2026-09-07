@@ -39,11 +39,10 @@ export function ContextSidebar({
   return (
     <aside
       id="context-panel"
-      className={`flex min-h-0 min-w-0 flex-col border-l border-border/60 bg-card max-[1100px]:fixed max-[1100px]:inset-y-0 max-[1100px]:right-0 max-[1100px]:z-40 max-[1100px]:w-[min(360px,88vw)] max-[1100px]:shadow-[var(--shadow)] max-[1100px]:transition-transform ${open ? 'max-[1100px]:translate-x-0' : 'max-[1100px]:translate-x-[105%]'}`}
+      className={`panel flex min-h-0 min-w-0 flex-col border-l border-border/60 max-[1100px]:fixed max-[1100px]:inset-y-0 max-[1100px]:right-0 max-[1100px]:z-40 max-[1100px]:w-[min(360px,88vw)] max-[1100px]:shadow-[var(--shadow)] max-[1100px]:transition-transform ${open ? 'max-[1100px]:translate-x-0' : 'max-[1100px]:invisible max-[1100px]:translate-x-[105%]'}`}
     >
-      <header className="flex min-h-16 items-center justify-between border-b border-border/60 px-3.5">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-border/60 px-3.5">
         <div className="min-w-0">
-          <span className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Local text only</span>
           <h2 className="m-0 truncate text-base font-semibold tracking-tight">Context</h2>
         </div>
         <IconButton aria-label="Import files" title="Import files" onClick={onImport}><FolderPlus size={16} /></IconButton>
@@ -56,14 +55,14 @@ export function ContextSidebar({
       </div>
 
       <div className="px-3 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">Sources</div>
-      <div className="max-h-[31vh] overflow-y-auto px-2 pb-2">
+      <div className="max-h-[31vh] scroll-stable overflow-y-auto px-2 pb-2">
         {sources.map((source) => (
           <div key={source.id} className="group/source flex min-h-9 items-center rounded-md hover:bg-muted">
             <button className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left" onClick={() => onOpenSource(source)}>
               {source.archive_path ? <Archive className="shrink-0 text-muted-foreground" size={14} /> : <FileText className="shrink-0 text-muted-foreground" size={14} />}
               <span className="min-w-0 flex-1">
                 <strong className="block truncate text-[11px] font-medium">{source.display_name}</strong>
-                <small className="mt-0.5 block truncate text-[9px] text-muted-foreground">{formatBytes(source.original_size)} · {source.line_count.toLocaleString()} lines</small>
+                <small className="mt-0.5 block truncate text-[11px] text-muted-foreground">{formatBytes(source.original_size)} · {source.line_count.toLocaleString()} lines</small>
               </span>
             </button>
             <div className="mr-1 flex opacity-0 group-hover/source:opacity-100 group-focus-within/source:opacity-100">
@@ -72,14 +71,14 @@ export function ContextSidebar({
             </div>
           </div>
         ))}
-        {sources.length === 0 && <p className="m-0 px-2 py-1 text-[10px] leading-5 text-muted-foreground">Drop-in import is local. ZIP entries are expanded into virtual text sources; unsupported binaries are ignored.</p>}
+        {sources.length === 0 && <p className="m-0 px-2 py-1 text-xs leading-5 text-muted-foreground">Add TXT or ZIP files to use as context.</p>}
       </div>
 
       <div className="flex items-center justify-between border-t border-border/60 px-3 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">
-        <span>Compiled context</span>
-        <strong className="font-medium text-foreground">~{formatTokens(workspaceTokens)}</strong>
+        <span>Included context</span>
+        <strong className="min-w-16 text-right font-medium tabular-nums text-foreground">~{formatTokens(workspaceTokens)}</strong>
       </div>
-      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-2 pb-2">
+      <div className="min-h-0 flex-1 space-y-1.5 scroll-stable overflow-y-auto px-2 pb-2">
         {slices.map((slice, index) => (
           <ContextItem
             key={slice.id}
@@ -91,12 +90,9 @@ export function ContextSidebar({
             onMove={(direction) => onMoveSlice(slice, direction)}
           />
         ))}
-        {slices.length === 0 && <p className="m-0 px-2 py-1 text-[10px] leading-5 text-muted-foreground">Nothing will be inserted from the workspace until you add a slice.</p>}
+        {slices.length === 0 && <p className="m-0 px-2 py-1 text-xs leading-5 text-muted-foreground">Choose a file or line range to include.</p>}
       </div>
-      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-2 text-[11px]">
-        <span className="text-muted-foreground">Total enabled</span>
-        <strong className="font-medium">~{formatTokens(workspaceTokens)}</strong>
-      </footer>
+
     </aside>
   )
 }

@@ -81,13 +81,24 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
-  const [compactLayout] = useState(() => typeof window !== 'undefined' && window.matchMedia(compactLayoutQuery).matches)
+  const [compactLayout, setCompactLayout] = useState(() => typeof window !== 'undefined' && window.matchMedia(compactLayoutQuery).matches)
   const [threadsOpen, setThreadsOpen] = useState(() => typeof window === 'undefined' || !window.matchMedia(compactLayoutQuery).matches)
   const [contextOpen, setContextOpen] = useState(() => typeof window === 'undefined' || !window.matchMedia(compactLayoutQuery).matches)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const restoreLeafOnErrorRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const query = window.matchMedia(compactLayoutQuery)
+    const onLayoutChange = () => {
+      setCompactLayout(query.matches)
+      setThreadsOpen(!query.matches)
+      setContextOpen(!query.matches)
+    }
+    query.addEventListener('change', onLayoutChange)
+    return () => query.removeEventListener('change', onLayoutChange)
+  }, [])
 
   const refreshBootstrap = async () => {
     const next = await bootstrap()
@@ -291,7 +302,7 @@ export default function App() {
   }
 
   return (
-    <div className="grid h-screen overflow-hidden bg-background text-foreground grid-cols-[minmax(210px,250px)_minmax(500px,1fr)_minmax(300px,380px)] max-[1180px]:grid-cols-[210px_minmax(480px,1fr)_310px] max-[1100px]:grid-cols-1">
+    <div className="grid h-dvh overflow-hidden bg-background text-foreground grid-cols-[240px_minmax(0,1fr)_320px] max-[1180px]:grid-cols-[210px_minmax(0,1fr)_300px] max-[1100px]:grid-cols-1">
       {compactLayout && (threadsOpen || contextOpen) && (
         <button className="fixed inset-0 z-30 border-0 bg-black/35" aria-label="Close side panel" onClick={() => { setThreadsOpen(false); setContextOpen(false) }} />
       )}
@@ -314,16 +325,16 @@ export default function App() {
       <main className="flex min-h-0 min-w-0 flex-col bg-background">
         <header className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md">
           <div className="flex min-w-0 items-center gap-2.5">
-            <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" onClick={toggleThreads}>Threads</Button>
+            <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" aria-expanded={threadsOpen} aria-controls="threads-panel" onClick={toggleThreads}>Threads</Button>
             <div className="min-w-0">
-              <span className="block truncate text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">{state.provider.name} · {providerProtocolLabel}</span>
+              <span className="block truncate text-[11px] font-medium text-muted-foreground">{state.provider.name} · {providerProtocolLabel}</span>
               <strong className="block truncate text-sm font-semibold">{state.provider.model}</strong>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" onClick={toggleContext}>Context</Button>
+            <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" aria-expanded={contextOpen} aria-controls="context-panel" onClick={toggleContext}>Context</Button>
             <IconButton aria-label="Provider settings" title="Provider settings" onClick={() => setSettingsOpen(true)}><Settings size={16} /></IconButton>
-            <div className="flex flex-col items-end rounded-lg border border-border/60 bg-card px-2.5 py-1.5 max-sm:hidden">
+            <div className="flex w-28 flex-col items-end overflow-hidden px-1 py-1.5 tabular-nums max-sm:hidden">
               <span className="text-[11px] font-semibold">{formatTokens(historyTokens + workspaceTokens + estimateTokens(input))} input</span>
               <small className="text-[9px] text-muted-foreground">{formatTokens(workspaceTokens)} workspace</small>
             </div>
@@ -331,7 +342,7 @@ export default function App() {
         </header>
         {error && (
           <div className="mx-4 mt-2 flex items-center justify-between gap-3 rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">
-            <span>{error}</span>
+            <span className="min-w-0 break-words">{error}</span>
             <IconButton className="size-7 text-destructive" aria-label="Dismiss error" onClick={() => setError(null)}><X size={14} /></IconButton>
           </div>
         )}
@@ -341,6 +352,10 @@ export default function App() {
           copiedMessageId={copiedMessageId}
           actionsDisabled={busy || Boolean(streaming)}
           messagesEndRef={messagesEndRef}
+          onScroll={(event) => {
+            const viewport = event.currentTarget
+            stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48
+          }}
           onIncludedChange={(message, included) => {
             setMessages((current) => current.map((item) => item.id === message.id ? { ...item, include_next: included } : item))
             void setMessageIncluded(message.id, included).catch((reason) => setError(String(reason)))

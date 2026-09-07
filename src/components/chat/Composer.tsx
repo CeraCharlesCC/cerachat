@@ -1,5 +1,5 @@
 import { ArrowUp, LoaderCircle } from 'lucide-react'
-import { useEffect, type KeyboardEvent, type RefObject } from 'react'
+import { type KeyboardEvent, type RefObject } from 'react'
 import type { HistoryMode, Message } from '../../types'
 import { estimateTokens, formatTokens } from '../../lib/utils'
 import { Button } from '../ui/Button'
@@ -22,13 +22,6 @@ export function Composer({ textareaRef, input, historyMode, sinceMessageId, path
   onPreview: () => void
   onSend: () => void
 }) {
-  useEffect(() => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    textarea.style.height = 'auto'
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 192)}px`
-  }, [input, textareaRef])
-
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
@@ -39,10 +32,10 @@ export function Composer({ textareaRef, input, historyMode, sinceMessageId, path
   return (
     <section className="shrink-0 bg-gradient-to-t from-background via-background to-transparent px-4 pb-4 pt-2 md:pb-6">
       <div className="mx-auto w-full max-w-[44rem]">
-        <div className="mb-2 flex min-h-7 flex-wrap items-center gap-2 px-2 text-[11px] text-muted-foreground">
-          <label className="inline-flex items-center gap-1.5">
-            <span>History</span>
-            <select className="h-7 rounded-md border border-border/70 bg-background px-2 text-[11px] text-foreground outline-none hover:bg-accent" value={historyMode} onChange={(event) => onHistoryModeChange(event.target.value as HistoryMode)}>
+        <div className="mb-3 grid grid-cols-2 items-center gap-2 px-1">
+          <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <span className="shrink-0">History</span>
+            <select className="h-8 w-full min-w-0 rounded-lg border border-border/70 bg-card px-2 text-xs text-foreground" value={historyMode} onChange={(event) => onHistoryModeChange(event.target.value as HistoryMode)}>
               <option value="full">Full branch</option>
               <option value="last10">Last 10 messages</option>
               <option value="since_here">Since here</option>
@@ -50,38 +43,40 @@ export function Composer({ textareaRef, input, historyMode, sinceMessageId, path
               <option value="no_history">No history</option>
             </select>
           </label>
-          {historyMode === 'since_here' && (
-            <select className="h-7 min-w-0 max-w-64 rounded-md border border-border/70 bg-background px-2 text-[11px] text-foreground outline-none hover:bg-accent" aria-label="Since message" value={sinceMessageId ?? ''} onChange={(event) => onSinceMessageChange(event.target.value || null)}>
-              <option value="">Choose message…</option>
-              {path.map((message) => <option value={message.id} key={message.id}>{message.role}: {message.content.slice(0, 45)}</option>)}
-            </select>
-          )}
-          <span className="ml-auto whitespace-nowrap">{formatTokens(historyTokens)} history · {formatTokens(workspaceTokens)} workspace · ~{formatTokens(estimateTokens(input))} input</span>
+          <select className={`h-8 w-full min-w-0 rounded-lg border border-border/70 bg-card px-2 text-xs text-foreground ${historyMode === 'since_here' ? '' : 'invisible'}`} disabled={historyMode !== 'since_here'} aria-label="Since message" value={sinceMessageId ?? ''} onChange={(event) => onSinceMessageChange(event.target.value || null)}>
+            <option value="">Choose message…</option>
+            {path.map((message) => <option value={message.id} key={message.id}>{message.role}: {message.content.slice(0, 45)}</option>)}
+          </select>
         </div>
 
-        <div className="rounded-3xl border border-border/70 bg-card p-2 shadow-sm transition-colors focus-within:border-border">
+        <div className="rounded-2xl border border-input bg-card p-2 shadow-sm transition-colors focus-within:border-ring">
           <textarea
             ref={textareaRef}
-            className="block max-h-48 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-[15px] leading-6 text-card-foreground outline-none placeholder:text-muted-foreground/60"
-            rows={1}
+            className="scroll-stable block h-24 w-full resize-none overflow-y-auto bg-transparent px-3 py-2 text-[15px] leading-6 text-card-foreground outline-none placeholder:text-muted-foreground"
+            rows={3}
             placeholder="Message the model…"
             aria-label="Message input"
+            title="Enter to send · Shift+Enter for a new line"
             value={input}
             onChange={(event) => onInputChange(event.target.value)}
             onKeyDown={handleKeyDown}
           />
           <div className="mt-1 flex items-end justify-between gap-2">
-            <div className="min-w-0 px-2 pb-0.5 text-[10px] leading-4 text-muted-foreground">
-              <span className="block">{input.length.toLocaleString()} chars / ~{formatTokens(Math.ceil(input.length / 4))}</span>
-              <span className="hidden sm:block">Enter to send · Shift+Enter for a new line</span>
-            </div>
+            <span className="min-w-0 truncate px-3 pb-2 text-xs tabular-nums text-muted-foreground" title={`${input.length.toLocaleString()} characters`}>{input.length.toLocaleString()} chars</span>
             <div className="flex items-center gap-1.5">
-              <Button variant="ghost" size="sm" disabled={!canCompile} onClick={onPreview}>Preview request</Button>
-              <IconButton variant="primary" className="size-8" disabled={busy || !canCompile} onClick={onSend} aria-label="Send message" title="Send message">
+              <Button variant="ghost" size="sm" disabled={!canCompile} onClick={onPreview}>Preview</Button>
+              <IconButton variant="primary" className="size-8" disabled={busy || !canCompile} onClick={onSend} aria-label="Send message" title="Send message (Enter)">
                 {streaming || busy ? <LoaderCircle className="animate-spin" size={16} /> : <ArrowUp size={16} />}
               </IconButton>
             </div>
           </div>
+        </div>
+        <div className="mt-2 grid grid-cols-3 gap-2 px-2 text-[11px] tabular-nums text-muted-foreground" aria-label="Estimated tokens">
+          {([['History', historyTokens], ['Context', workspaceTokens], ['Input', estimateTokens(input)]] as const).map(([label, tokens]) => (
+            <span key={label} className="flex min-w-0 items-center justify-between gap-1">
+              <span>{label}</span><span className="truncate text-right" title={`${tokens.toLocaleString()} estimated tokens`}>~{formatTokens(tokens)}</span>
+            </span>
+          ))}
         </div>
       </div>
     </section>
