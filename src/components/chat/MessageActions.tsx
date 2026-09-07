@@ -15,11 +15,16 @@ export function MessageActions({ message, copied, disabled, onIncludedChange, on
 }) {
   return (
     <div className={`flex min-h-8 items-center gap-0.5 text-muted-foreground opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-      <label className="mr-1 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-2 text-[11px] hover:bg-accent hover:text-foreground" title="Include this message in selected/future history modes">
-        <input className="sr-only" type="checkbox" checked={message.include_next} onChange={(event) => onIncludedChange(event.target.checked)} />
+      <button
+        type="button"
+        className="mr-1 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-2 text-[11px] hover:bg-accent hover:text-foreground"
+        aria-pressed={message.include_next}
+        title="Include this message in selected/future history modes"
+        onClick={() => onIncludedChange(!message.include_next)}
+      >
         <span className={`grid size-3.5 place-items-center rounded-full border ${message.include_next ? 'border-primary bg-primary text-primary-foreground' : 'border-border'}`}>{message.include_next && <Check size={10} strokeWidth={3} />}</span>
         <span>{message.include_next ? 'Included' : 'Include next'}</span>
-      </label>
+      </button>
       <IconButton className="size-7" aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy message'} onClick={onCopy}>
         {copied ? <Check size={15} /> : <Copy size={15} />}
       </IconButton>
