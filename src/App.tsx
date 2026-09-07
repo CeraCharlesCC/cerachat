@@ -1,8 +1,15 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import MarkdownIt from 'markdown-it'
-import DOMPurify from 'dompurify'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import './App.css'
+import { Settings, X } from 'lucide-react'
+import { ChatThread } from './components/chat/ChatThread'
+import { Composer } from './components/chat/Composer'
+import { ContextSidebar } from './components/context/ContextSidebar'
+import { ProviderSettings } from './components/dialogs/ProviderSettings'
+import { RequestInspector } from './components/dialogs/RequestInspector'
+import { SourceViewer } from './components/dialogs/SourceViewer'
+import { ThreadSidebar } from './components/navigation/ThreadSidebar'
+import { Button } from './components/ui/Button'
+import { IconButton } from './components/ui/IconButton'
 import {
   addContextSlice,
   bootstrap,
@@ -23,22 +30,19 @@ import {
   subscribeStream,
   updateContextSlice,
 } from './lib/backend'
-import { estimateTokens, formatBytes, formatTokens, shortId } from './lib/utils'
+import { estimateTokens, formatTokens } from './lib/utils'
 import type {
   BootstrapState,
   ContextSlice,
   HistoryMode,
   InsertAt,
   Message,
-  ProviderConfig,
   RequestPreview,
-  SourceLines,
   StreamPayload,
   WorkspaceSource,
   WrapperMode,
 } from './types'
 
-const markdown = new MarkdownIt({ html: false, linkify: true, breaks: true })
 const compactLayoutQuery = '(max-width: 1100px)'
 
 function messagePath(messages: Message[], leafId: string | null): Message[] {
@@ -60,143 +64,6 @@ function latestLeaf(messages: Message[]): string | null {
   const parentIds = new Set(messages.flatMap((message) => message.parent_id ? [message.parent_id] : []))
   const leaves = messages.filter((message) => !parentIds.has(message.id))
   return (leaves[leaves.length - 1] ?? messages[messages.length - 1])?.id ?? null
-}
-
-function depthFor(message: Message, byId: Map<string, Message>): number {
-  let depth = 0
-  let parentId = message.parent_id
-  let guard = 0
-  while (parentId && guard < byId.size) {
-    depth += 1
-    parentId = byId.get(parentId)?.parent_id ?? null
-    guard += 1
-  }
-  return depth
-}
-
-function MarkdownContent({ content }: { content: string }) {
-  const html = useMemo(() => DOMPurify.sanitize(markdown.render(content)), [content])
-  return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />
-}
-
-function Modal({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
-        <header className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Close">×</button></header>
-        <div className="modal-body">{children}</div>
-      </section>
-    </div>
-  )
-}
-
-function ProviderSettings({ provider, onSave, onClose }: { provider: ProviderConfig; onSave: (provider: ProviderConfig) => Promise<void>; onClose: () => void }) {
-  const [draft, setDraft] = useState<ProviderConfig>({ ...provider })
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
-  const update = <K extends keyof ProviderConfig>(key: K, value: ProviderConfig[K]) => setDraft((current) => ({ ...current, [key]: value }))
-  const endpointName = draft.protocol === 'openai_responses' ? '/responses' : '/chat/completions'
-
-  const handleSave = async () => {
-    if (!draft.base_url.trim() || !draft.model.trim()) return
-    setSaveError(null)
-    setSaving(true)
-    try {
-      await onSave(draft)
-    } catch (reason) {
-      setSaveError(String(reason))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Modal title="Provider settings" onClose={onClose} wide>
-      <p className="notice">Saving is local only. There is no API test, capability detection, model fetch, or background request.</p>
-      <div className="form-grid two-column">
-        <label>Provider name<input value={draft.name} onChange={(event) => update('name', event.target.value)} /></label>
-        <label>Protocol<select value={draft.protocol} onChange={(event) => update('protocol', event.target.value as ProviderConfig['protocol'])}><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses API</option></select></label>
-        <label className="span-2">Base URL<input value={draft.base_url} onChange={(event) => update('base_url', event.target.value)} placeholder="https://example.com/v1" /><span className="field-hint">The configured base is normalized to {endpointName} when you send.</span></label>
-        <label className="span-2">API key<input type="password" autoComplete="off" value={draft.api_key} onChange={(event) => update('api_key', event.target.value)} /></label>
-        <label>API key storage<select value={draft.api_key_storage} onChange={(event) => update('api_key_storage', event.target.value as ProviderConfig['api_key_storage'])}><option value="plain_portable">Plain portable configuration</option><option value="windows_dpapi" disabled>Windows DPAPI (planned)</option></select></label>
-        <label>Model ID<input value={draft.model} onChange={(event) => update('model', event.target.value)} /></label>
-        <label>Context window<input type="number" min={1} value={draft.context_window} onChange={(event) => update('context_window', Number(event.target.value))} /></label>
-        <label>Max output<input type="number" min={1} value={draft.max_output_tokens} onChange={(event) => update('max_output_tokens', Number(event.target.value))} /></label>
-        <label>Temperature<input type="number" step="0.1" value={draft.temperature ?? ''} onChange={(event) => update('temperature', event.target.value === '' ? null : Number(event.target.value))} /></label>
-        <label className="span-2">System text<textarea rows={5} value={draft.system_text} onChange={(event) => update('system_text', event.target.value)} /></label>
-        <label className="span-2">Context separator<textarea rows={3} value={draft.context_separator} onChange={(event) => update('context_separator', event.target.value)} /></label>
-        <label className="span-2">Optional raw JSON overrides<textarea className="mono" rows={6} value={draft.raw_json_overrides} onChange={(event) => update('raw_json_overrides', event.target.value)} /></label>
-      </div>
-      {saveError && <p className="form-error" role="alert">{saveError}</p>}
-      <div className="modal-actions"><button onClick={onClose}>Cancel</button><button className="primary" disabled={saving || !draft.base_url.trim() || !draft.model.trim()} onClick={() => void handleSave()}>{saving ? 'Saving…' : 'Save locally'}</button></div>
-    </Modal>
-  )
-}
-
-function RequestInspector({ preview, onClose }: { preview: RequestPreview; onClose: () => void }) {
-  const b = preview.breakdown
-  return (
-    <Modal title="Request preview" onClose={onClose} wide>
-      <div className="request-summary">
-        <div><span>System</span><strong>{formatTokens(b.system_tokens)}</strong></div>
-        <div><span>History</span><strong>{formatTokens(b.history_tokens)}</strong></div>
-        <div><span>Workspace</span><strong>{formatTokens(b.workspace_tokens)}</strong></div>
-        <div><span>Current input</span><strong>{formatTokens(b.input_tokens)}</strong></div>
-        <div className="summary-total"><span>Estimated input</span><strong>{formatTokens(b.estimated_input_tokens)}</strong></div>
-        <div><span>Max output</span><strong>{formatTokens(b.max_output_tokens)}</strong></div>
-        <div><span>Configured context</span><strong>{formatTokens(b.configured_context)}</strong></div>
-      </div>
-      <div className="hash-row"><span>SHA-256</span><code>{preview.request_sha256}</code><button onClick={() => void navigator.clipboard?.writeText(preview.request_json)}>Copy JSON</button></div>
-      <h3>Actual request JSON</h3>
-      <pre className="request-code">{preview.request_json}</pre>
-      <details><summary>Compiled prompt audit view</summary><pre className="request-code">{preview.compiled_prompt}</pre></details>
-    </Modal>
-  )
-}
-
-function SourceViewer({ source, onClose, onAdd }: { source: WorkspaceSource; onClose: () => void; onAdd: (start: number, end: number) => Promise<void> }) {
-  const [windowStart, setWindowStart] = useState(1)
-  const [lines, setLines] = useState<SourceLines | null>(null)
-  const [rangeStart, setRangeStart] = useState(1)
-  const [rangeEnd, setRangeEnd] = useState(Math.min(source.line_count || 1, 200))
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    void getSourceLines(source.id, windowStart, 200).then((result) => { if (!cancelled) setLines(result) })
-    return () => { cancelled = true }
-  }, [source.id, windowStart])
-
-  return (
-    <Modal title={source.display_name} onClose={onClose} wide>
-      <div className="viewer-toolbar">
-        <span>{source.line_count.toLocaleString()} lines · {formatBytes(source.original_size)}</span>
-        <div><button disabled={windowStart <= 1} onClick={() => setWindowStart(Math.max(1, windowStart - 200))}>← 200</button><button disabled={windowStart + 200 > source.line_count} onClick={() => setWindowStart(windowStart + 200)}>200 →</button></div>
-      </div>
-      <div className="line-viewer">
-        {lines?.lines.map((line, index) => <div className="source-line" key={lines.start_line + index}><span>{lines.start_line + index}</span><code>{line || ' '}</code></div>)}
-      </div>
-      <div className="range-bar">
-        <label>From line<input type="number" min={1} max={source.line_count} value={rangeStart} onChange={(event) => setRangeStart(Number(event.target.value))} /></label>
-        <label>To line<input type="number" min={rangeStart} max={source.line_count} value={rangeEnd} onChange={(event) => setRangeEnd(Number(event.target.value))} /></label>
-        <button className="primary" disabled={busy || rangeStart < 1 || rangeEnd < rangeStart} onClick={() => { setBusy(true); void onAdd(rangeStart, rangeEnd).finally(() => setBusy(false)) }}>{busy ? 'Adding…' : 'Add selection to Context'}</button>
-      </div>
-    </Modal>
-  )
-}
-
-function ContextItem({ slice, index, allSlices, onChange, onDelete, onMove }: { slice: ContextSlice; index: number; allSlices: ContextSlice[]; onChange: (args: { enabled?: boolean; wrapper?: WrapperMode; insertAt?: InsertAt }) => Promise<void>; onDelete: () => Promise<void>; onMove: (direction: -1 | 1) => Promise<void> }) {
-  const range = slice.range_type === 'all' ? 'Entire file' : slice.range_type === 'lines' ? `Lines ${slice.start_pos}–${slice.end_pos}` : `Chars ${slice.start_pos}–${slice.end_pos}`
-  return (
-    <div className={`context-item ${slice.enabled ? '' : 'disabled'}`}>
-      <div className="context-item-head"><input aria-label="Include context" type="checkbox" checked={slice.enabled} onChange={(event) => void onChange({ enabled: event.target.checked })} /><div className="context-title"><strong>{slice.source_name}</strong><span>{range} · ~{formatTokens(slice.estimated_tokens)}</span></div><button className="icon-button danger" title="Remove slice" onClick={() => void onDelete()}>×</button></div>
-      <div className="context-controls">
-        <select value={slice.wrapper} onChange={(event) => void onChange({ wrapper: event.target.value as WrapperMode })}><option value="raw">Exact / raw</option><option value="labeled">Labeled</option></select>
-        <select value={slice.insert_at} onChange={(event) => void onChange({ insertAt: event.target.value as InsertAt })}><option value="before_current">Before current input</option><option value="inside_current">After current input</option><option value="before_history">Before chat history</option><option value="system">System</option></select>
-        <div className="reorder"><button disabled={index === 0} onClick={() => void onMove(-1)}>↑</button><button disabled={index === allSlices.length - 1} onClick={() => void onMove(1)}>↓</button></div>
-      </div>
-    </div>
-  )
 }
 
 export default function App() {
@@ -407,7 +274,7 @@ export default function App() {
     } catch (reason) { setError(String(reason)) }
   }
 
-  if (!state) return <div className="loading">Opening local workspace…</div>
+  if (!state) return <div className="grid h-screen place-items-center text-sm text-muted-foreground">Opening local workspace…</div>
 
   const providerProtocolLabel = state.provider.protocol === "openai_responses" ? "Responses API" : "Chat Completions"
   const selectLeaf = (messageId: string) => {
@@ -424,64 +291,102 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell ${threadsOpen ? "threads-open" : "threads-closed"} ${contextOpen ? "context-open" : "context-closed"}`}>
-      {compactLayout && (threadsOpen || contextOpen) && <button className="panel-scrim" aria-label="Close side panel" onClick={() => { setThreadsOpen(false); setContextOpen(false) }} />}
-      <aside id="threads-panel" className="sidebar threads-panel">
-        <div className="panel-heading"><div><span className="eyebrow">Local</span><h1>CeraChat</h1></div><button className="icon-button" title="Provider settings" onClick={() => setSettingsOpen(true)}>⚙</button></div>
-        <button className="new-chat" onClick={() => void createConversation().then(async (conversation) => { await refreshBootstrap(); setConversationId(conversation.id) }).catch((reason) => setError(String(reason)))}>＋ New chat</button>
-        <div className="section-label">Threads</div>
-        <div className="conversation-list">
-          {state.conversations.map((conversation) => <div className={`conversation-row ${conversation.id === conversationId ? 'active' : ''}`} key={conversation.id}><button onClick={() => setConversationId(conversation.id)}><strong>{conversation.title}</strong><span>{shortId(conversation.id)}</span></button><button className="row-delete" title="Delete conversation" onClick={() => { if (confirm('Delete this conversation and its message tree?')) void deleteConversation(conversation.id).then(refreshBootstrap).catch((reason) => setError(String(reason))) }}>×</button></div>)}
-        </div>
-        <div className="section-label branch-label">Branch tree</div>
-        <div className="branch-tree">
-          {messages.map((message) => <button key={message.id} className={`branch-node ${message.id === activeLeafId ? 'active' : ''}`} style={{ paddingLeft: `${10 + depthFor(message, byId) * 12}px` }} onClick={() => selectLeaf(message.id)}><span className={`role-dot ${message.role}`} /> <span>{message.content.replace(/\s+/g, ' ').slice(0, 40) || '(empty)'}</span></button>)}
-        </div>
-        <div className="sidebar-footer"><span>{isTauri() ? 'Desktop' : 'Browser demo'}</span><code title={state.data_dir}>{state.data_dir ? state.data_dir.split(/[\\/]/).slice(-1)[0] : 'local'}</code></div>
-      </aside>
+    <div className="grid h-screen overflow-hidden bg-background text-foreground grid-cols-[minmax(210px,250px)_minmax(500px,1fr)_minmax(300px,380px)] max-[1180px]:grid-cols-[210px_minmax(480px,1fr)_310px] max-[1100px]:grid-cols-1">
+      {compactLayout && (threadsOpen || contextOpen) && (
+        <button className="fixed inset-0 z-30 border-0 bg-black/35" aria-label="Close side panel" onClick={() => { setThreadsOpen(false); setContextOpen(false) }} />
+      )}
 
-      <main className="chat-panel">
-        <header className="chat-header">
-          <div className="chat-header-main"><button className="panel-toggle" onClick={toggleThreads}>Threads</button><div><span className="eyebrow">{state.provider.name} · {providerProtocolLabel}</span><strong>{state.provider.model}</strong></div></div>
-          <div className="chat-header-actions"><button className="panel-toggle" onClick={toggleContext}>Context</button><button className="icon-button" title="Provider settings" onClick={() => setSettingsOpen(true)}>⚙</button><div className="budget-chip"><span>{formatTokens(historyTokens + workspaceTokens + estimateTokens(input))} input</span><small>{formatTokens(workspaceTokens)} workspace</small></div></div>
-        </header>
-        {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError(null)}>×</button></div>}
-        <section className="messages">
-          {path.length === 0 && <div className="empty-chat"><div className="empty-mark">C</div><h2>One visible request. Everything else stays local.</h2><p>Select local context on the right, inspect the exact request, then send once.</p></div>}
-          {path.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="message-meta"><strong>{message.role === 'user' ? 'USER' : 'MODEL'}</strong><span>{shortId(message.id)}</span><label><input type="checkbox" checked={message.include_next} onChange={(event) => { const included = event.target.checked; setMessages((current) => current.map((item) => item.id === message.id ? { ...item, include_next: included } : item)); void setMessageIncluded(message.id, included).catch((reason) => setError(String(reason))) }} /> Include next</label><button onClick={() => void handleCopyMessage(message)}>{copiedMessageId === message.id ? 'Copied' : 'Copy'}</button>{message.role === 'assistant' && <button disabled={busy || Boolean(streaming)} onClick={() => void handleRegenerate(message)}>Regenerate</button>}<button title="Delete this branch" onClick={() => { if (confirm('Delete this message and all descendants?')) void deleteBranch(message.id).then(async () => { if (conversationId) await loadConversation(conversationId); await refreshBootstrap() }).catch((reason) => setError(String(reason))) }}>Delete branch</button></div><MarkdownContent content={message.content} /></article>)}
-          {streaming && <article className="message assistant streaming"><div className="message-meta"><strong>MODEL</strong><span>streaming</span></div><MarkdownContent content={streaming.text || '…'} /></article>}
-          <div ref={messagesEndRef} />
-        </section>
-        <section className="composer-wrap">
-          <div className="composer-toolbar">
-            <label>History<select value={historyMode} onChange={(event) => setHistoryMode(event.target.value as HistoryMode)}><option value="full">Full branch</option><option value="last10">Last 10 messages</option><option value="since_here">Since here</option><option value="selected">Selected messages</option><option value="no_history">No history</option></select></label>
-            {historyMode === 'since_here' && <select aria-label="Since message" value={sinceMessageId ?? ''} onChange={(event) => setSinceMessageId(event.target.value || null)}><option value="">Choose message…</option>{path.map((message) => <option value={message.id} key={message.id}>{message.role}: {message.content.slice(0, 45)}</option>)}</select>}
-            <span className="token-breakdown">{formatTokens(historyTokens)} history · {formatTokens(workspaceTokens)} workspace · ~{formatTokens(estimateTokens(input))} input</span>
+      <ThreadSidebar
+        open={threadsOpen}
+        conversations={state.conversations}
+        conversationId={conversationId}
+        messages={messages}
+        activeLeafId={activeLeafId}
+        dataDir={state.data_dir}
+        desktop={isTauri()}
+        onNewChat={() => void createConversation().then(async (conversation) => { await refreshBootstrap(); setConversationId(conversation.id) }).catch((reason) => setError(String(reason)))}
+        onSelectConversation={setConversationId}
+        onDeleteConversation={(id) => { if (confirm('Delete this conversation and its message tree?')) void deleteConversation(id).then(refreshBootstrap).catch((reason) => setError(String(reason))) }}
+        onSelectLeaf={selectLeaf}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+
+      <main className="flex min-h-0 min-w-0 flex-col bg-background">
+        <header className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" onClick={toggleThreads}>Threads</Button>
+            <div className="min-w-0">
+              <span className="block truncate text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">{state.provider.name} · {providerProtocolLabel}</span>
+              <strong className="block truncate text-sm font-semibold">{state.provider.model}</strong>
+            </div>
           </div>
-          <textarea ref={textareaRef} className="composer" rows={5} placeholder="Message the model…" value={input} onChange={(event) => { if (conversationId) setDrafts((current) => ({ ...current, [conversationId]: event.target.value })) }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void handleSend() } }} />
-          <div className="composer-footer"><span className="composer-status"><span>{input.length.toLocaleString()} chars / ~{formatTokens(Math.ceil(input.length / 4))}</span><span>Enter to send · Shift+Enter for a new line</span></span><div><button disabled={!canCompile} onClick={() => void handlePreview()}>Preview request</button><button className="primary" disabled={busy || !canCompile} onClick={() => void handleSend()}>{streaming ? 'Streaming…' : busy ? 'Starting…' : 'Send'}</button></div></div>
-        </section>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" onClick={toggleContext}>Context</Button>
+            <IconButton aria-label="Provider settings" title="Provider settings" onClick={() => setSettingsOpen(true)}><Settings size={16} /></IconButton>
+            <div className="flex flex-col items-end rounded-lg border border-border/60 bg-card px-2.5 py-1.5 max-sm:hidden">
+              <span className="text-[11px] font-semibold">{formatTokens(historyTokens + workspaceTokens + estimateTokens(input))} input</span>
+              <small className="text-[9px] text-muted-foreground">{formatTokens(workspaceTokens)} workspace</small>
+            </div>
+          </div>
+        </header>
+        {error && (
+          <div className="mx-4 mt-2 flex items-center justify-between gap-3 rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">
+            <span>{error}</span>
+            <IconButton className="size-7 text-destructive" aria-label="Dismiss error" onClick={() => setError(null)}><X size={14} /></IconButton>
+          </div>
+        )}
+        <ChatThread
+          path={path}
+          streamingText={streaming?.text ?? null}
+          copiedMessageId={copiedMessageId}
+          actionsDisabled={busy || Boolean(streaming)}
+          messagesEndRef={messagesEndRef}
+          onIncludedChange={(message, included) => {
+            setMessages((current) => current.map((item) => item.id === message.id ? { ...item, include_next: included } : item))
+            void setMessageIncluded(message.id, included).catch((reason) => setError(String(reason)))
+          }}
+          onCopy={(message) => void handleCopyMessage(message)}
+          onRegenerate={(message) => void handleRegenerate(message)}
+          onDelete={(message) => { if (confirm('Delete this message and all descendants?')) void deleteBranch(message.id).then(async () => { if (conversationId) await loadConversation(conversationId); await refreshBootstrap() }).catch((reason) => setError(String(reason))) }}
+        />
+        <Composer
+          textareaRef={textareaRef}
+          input={input}
+          historyMode={historyMode}
+          sinceMessageId={sinceMessageId}
+          path={path}
+          historyTokens={historyTokens}
+          workspaceTokens={workspaceTokens}
+          canCompile={canCompile}
+          busy={busy}
+          streaming={Boolean(streaming)}
+          onInputChange={(value) => { if (conversationId) setDrafts((current) => ({ ...current, [conversationId]: value })) }}
+          onHistoryModeChange={setHistoryMode}
+          onSinceMessageChange={setSinceMessageId}
+          onPreview={() => void handlePreview()}
+          onSend={() => void handleSend()}
+        />
       </main>
 
-      <aside id="context-panel" className="sidebar context-panel">
-        <div className="panel-heading"><div><span className="eyebrow">Local text only</span><h2>Context Workspace</h2></div><button className="icon-button" title="Import files" onClick={() => void handleImport()}>＋</button></div>
-        <div className="context-actions"><button onClick={() => void handleImport()}>Add TXT / ZIP</button><button disabled={busy || !state.sources.length} onClick={() => void addAllSources('raw')}>Include all · exact</button><button disabled={busy || !state.sources.length} onClick={() => void addAllSources('labeled')}>Include all · labeled</button></div>
-        <div className="section-label">Sources</div>
-        <div className="source-list">
-          {state.sources.map((source) => <div className="source-row" key={source.id}><button onClick={() => setViewerSource(source)}><span className="source-icon">{source.archive_path ? '▣' : '▤'}</span><span><strong>{source.display_name}</strong><small>{formatBytes(source.original_size)} · {source.line_count.toLocaleString()} lines</small></span></button><div className="source-actions"><button title="Include entire file" onClick={() => void addContextSlice({ sourceId: source.id, rangeType: 'all', wrapper: 'raw', insertAt: 'before_current' }).then(refreshBootstrap).catch((reason) => setError(String(reason)))}>＋</button><button title="Remove source" onClick={() => { if (confirm('Remove this source and its live context slices? Past request snapshots remain reproducible.')) void removeSource(source.id).then(refreshBootstrap).catch((reason) => setError(String(reason))) }}>×</button></div></div>)}
-          {!state.sources.length && <p className="muted">Drop-in import is local. ZIP entries are expanded into virtual text sources; unsupported binaries are ignored.</p>}
-        </div>
-        <div className="section-label compiled-label"><span>Compiled Context</span><strong>~{formatTokens(workspaceTokens)}</strong></div>
-        <div className="slice-list">
-          {orderedSlices.map((slice, index) => <ContextItem key={slice.id} slice={slice} index={index} allSlices={orderedSlices} onChange={(patch) => updateSlice(slice, patch)} onDelete={async () => { await deleteContextSlice(slice.id); await refreshBootstrap() }} onMove={(direction) => moveSlice(slice, direction)} />)}
-          {!orderedSlices.length && <p className="muted">Nothing will be inserted from the workspace until you add a slice.</p>}
-        </div>
-        <div className="context-total"><span>Total enabled</span><strong>~{formatTokens(workspaceTokens)}</strong></div>
-      </aside>
+      <ContextSidebar
+        open={contextOpen}
+        sources={state.sources}
+        slices={orderedSlices}
+        workspaceTokens={workspaceTokens}
+        busy={busy}
+        onImport={() => void handleImport()}
+        onAddAll={(wrapper) => void addAllSources(wrapper)}
+        onOpenSource={setViewerSource}
+        onAddSource={(source) => void addContextSlice({ sourceId: source.id, rangeType: 'all', wrapper: 'raw', insertAt: 'before_current' }).then(refreshBootstrap).catch((reason) => setError(String(reason)))}
+        onRemoveSource={(source) => { if (confirm('Remove this source and its live context slices? Past request snapshots remain reproducible.')) void removeSource(source.id).then(refreshBootstrap).catch((reason) => setError(String(reason))) }}
+        onChangeSlice={(slice, patch) => void updateSlice(slice, patch).catch((reason) => setError(String(reason)))}
+        onDeleteSlice={(slice) => void deleteContextSlice(slice.id).then(refreshBootstrap).catch((reason) => setError(String(reason)))}
+        onMoveSlice={(slice, direction) => void moveSlice(slice, direction).catch((reason) => setError(String(reason)))}
+      />
 
       {settingsOpen && <ProviderSettings provider={state.provider} onClose={() => setSettingsOpen(false)} onSave={async (provider) => { await saveProvider(provider); await refreshBootstrap(); setSettingsOpen(false) }} />}
       {preview && <RequestInspector preview={preview} onClose={() => setPreview(null)} />}
-      {viewerSource && <SourceViewer source={viewerSource} onClose={() => setViewerSource(null)} onAdd={async (start, end) => { await addContextSlice({ sourceId: viewerSource.id, rangeType: 'lines', startPos: start, endPos: end, wrapper: 'raw', insertAt: 'before_current' }); await refreshBootstrap(); setViewerSource(null) }} />}
+      {viewerSource && <SourceViewer source={viewerSource} onClose={() => setViewerSource(null)} onLoadLines={getSourceLines} onAdd={async (start, end) => { await addContextSlice({ sourceId: viewerSource.id, rangeType: 'lines', startPos: start, endPos: end, wrapper: 'raw', insertAt: 'before_current' }); await refreshBootstrap(); setViewerSource(null) }} />}
     </div>
   )
 }
