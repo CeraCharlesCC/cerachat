@@ -3,11 +3,12 @@ import type { Message } from '../../types'
 import { ChatMessage } from './ChatMessage'
 import { MarkdownContent } from './MarkdownContent'
 
-export function ChatThread({ path, streamingText, copiedMessageId, actionsDisabled, messagesEndRef, onScroll, onIncludedChange, onCopy, onRegenerate, onDelete }: {
+export function ChatThread({ path, streamingText, copiedMessageId, actionsDisabled, regenerateDisabled, messagesEndRef, onScroll, onIncludedChange, onCopy, onRegenerate, onDelete }: {
   path: Message[]
   streamingText: string | null
   copiedMessageId: string | null
   actionsDisabled: boolean
+  regenerateDisabled: boolean
   messagesEndRef: RefObject<HTMLDivElement>
   onScroll: UIEventHandler<HTMLElement>
   onIncludedChange: (message: Message, included: boolean) => void
@@ -33,6 +34,7 @@ export function ChatThread({ path, streamingText, copiedMessageId, actionsDisabl
               message={message}
               copied={copiedMessageId === message.id}
               actionsDisabled={actionsDisabled}
+              regenerateDisabled={regenerateDisabled}
               onIncludedChange={(included) => onIncludedChange(message, included)}
               onCopy={() => onCopy(message)}
               onRegenerate={() => onRegenerate(message)}

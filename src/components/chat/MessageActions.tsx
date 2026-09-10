@@ -4,10 +4,11 @@ import { shortId } from '../../lib/utils'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 
-export function MessageActions({ message, copied, disabled, onIncludedChange, onCopy, onRegenerate, onDelete }: {
+export function MessageActions({ message, copied, disabled, regenerateDisabled, onIncludedChange, onCopy, onRegenerate, onDelete }: {
   message: Message
   copied: boolean
   disabled: boolean
+  regenerateDisabled: boolean
   onIncludedChange: (included: boolean) => void
   onCopy: () => void
   onRegenerate: () => void
@@ -30,7 +31,7 @@ export function MessageActions({ message, copied, disabled, onIncludedChange, on
         {copied ? <Check size={15} /> : <Copy size={15} />}
       </IconButton>
       {message.role === 'assistant' && (
-        <IconButton className="size-7" aria-label="Regenerate response" title="Regenerate response" disabled={disabled} onClick={onRegenerate}>
+        <IconButton className="size-7" aria-label="Regenerate response" title="Regenerate response" disabled={disabled || regenerateDisabled} onClick={onRegenerate}>
           <RefreshCw size={15} />
         </IconButton>
       )}

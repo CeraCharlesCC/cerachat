@@ -16,6 +16,7 @@ use models::{AddSliceArgs, CompileRequestArgs, RegenerateArgs, StreamPayload, Up
 
 struct AppState {
     db: Arc<Database>,
+    settings: Arc<portable::settings::SettingsStore>,
 }
 
 fn command_error(error: impl std::fmt::Display) -> String {
@@ -144,7 +145,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<models::BootstrapState, Strin
     db::chat::ensure_conversation(&state.db).map_err(command_error)?;
     Ok(models::BootstrapState {
         conversations: db::chat::list_conversations(&state.db).map_err(command_error)?,
-        provider: portable::settings::load(data_dir(&state.db)).map_err(command_error)?,
+        provider_catalog: state.settings.load_catalog().map_err(command_error)?,
         sources: db::context::list_sources(&state.db).map_err(command_error)?,
         slices: db::context::list_slices(&state.db).map_err(command_error)?,
         data_dir: data_dir(&state.db).display().to_string(),
@@ -227,10 +228,56 @@ fn delete_context_slice(state: State<'_, AppState>, slice_id: String) -> Result<
 #[tauri::command]
 fn save_provider(
     state: State<'_, AppState>,
-    provider: models::ProviderConfig,
-) -> Result<(), String> {
+    provider: models::ProviderProfile,
+    api_key: Option<String>,
+) -> Result<models::ProviderCatalog, String> {
     // Saving provider settings is intentionally local-only: no validation or model-fetch request.
-    portable::settings::save(data_dir(&state.db), &provider).map_err(command_error)
+    state
+        .settings
+        .save_provider(provider, api_key)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+fn delete_provider(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<models::ProviderCatalog, String> {
+    state
+        .settings
+        .delete_provider(&provider_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+fn save_model(
+    state: State<'_, AppState>,
+    model: models::ModelProfile,
+) -> Result<models::ProviderCatalog, String> {
+    state.settings.save_model(model).map_err(command_error)
+}
+
+#[tauri::command]
+fn delete_model(
+    state: State<'_, AppState>,
+    provider_id: String,
+    model_id: String,
+) -> Result<models::ProviderCatalog, String> {
+    state
+        .settings
+        .delete_model(&provider_id, &model_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+fn select_model(
+    state: State<'_, AppState>,
+    unique_model_id: String,
+) -> Result<models::ProviderCatalog, String> {
+    state
+        .settings
+        .select_model(&unique_model_id)
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -238,7 +285,10 @@ fn compile_request(
     state: State<'_, AppState>,
     args: CompileRequestArgs,
 ) -> Result<models::RequestPreview, String> {
-    let provider = portable::settings::load(data_dir(&state.db)).map_err(command_error)?;
+    let provider = state
+        .settings
+        .load_active_provider()
+        .map_err(command_error)?;
     let compiled =
         context::compiler::compile(&state.db, &provider, &args).map_err(command_error)?;
     Ok(models::RequestPreview {
@@ -255,7 +305,10 @@ async fn send_message(
     state: State<'_, AppState>,
     args: CompileRequestArgs,
 ) -> Result<String, String> {
-    let provider = portable::settings::load(data_dir(&state.db)).map_err(command_error)?;
+    let provider = state
+        .settings
+        .load_active_provider()
+        .map_err(command_error)?;
     let compiled =
         context::compiler::compile(&state.db, &provider, &args).map_err(command_error)?;
     let user_message = db::chat::insert_message(
@@ -297,7 +350,10 @@ async fn regenerate_response(
         history_mode: args.history_mode,
         since_message_id: args.since_message_id,
     };
-    let provider = portable::settings::load(data_dir(&state.db)).map_err(command_error)?;
+    let provider = state
+        .settings
+        .load_active_provider()
+        .map_err(command_error)?;
     let compiled =
         context::compiler::compile(&state.db, &provider, &compile_args).map_err(command_error)?;
 
@@ -315,9 +371,13 @@ async fn regenerate_response(
 pub fn run() {
     let data = portable::paths::data_dir().expect("data directory");
     let db = Database::open(data.join("chat.sqlite3")).expect("database");
+    let settings = portable::settings::SettingsStore::new(data);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { db: Arc::new(db) })
+        .manage(AppState {
+            db: Arc::new(db),
+            settings: Arc::new(settings),
+        })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_messages,
@@ -332,6 +392,10 @@ pub fn run() {
             update_context_slice,
             delete_context_slice,
             save_provider,
+            delete_provider,
+            save_model,
+            delete_model,
+            select_model,
             compile_request,
             send_message,
             regenerate_response,

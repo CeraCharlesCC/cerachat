@@ -36,4 +36,4 @@ chardetng = "0.1"
 thiserror = "2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory"] }
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Memory"] }

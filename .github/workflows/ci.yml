@@ -44,6 +44,12 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Install browser for UI checks
+        run: npx playwright install --with-deps chromium
+
+      - name: Test local catalog workflows
+        run: npm run test:e2e
+
   rust:
     name: Rust checks
     runs-on: ubuntu-24.04

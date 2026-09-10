@@ -1,22 +1,6 @@
 import type { BootstrapState, ContextSlice, Message, ProviderConfig, RequestPreview, SourceLines, WorkspaceSource } from '../types'
 
 const now = Date.now()
-export const demoProvider: ProviderConfig = {
-  id: 'default',
-  name: 'My API',
-  protocol: 'openai_chat_completions',
-  base_url: 'https://example.com/v1',
-  api_key: '',
-  api_key_storage: 'plain_portable',
-  model: 'gpt-whatever',
-  context_window: 131072,
-  max_output_tokens: 16384,
-  system_text: 'You are a precise model. Use only the context explicitly included in this request.',
-  temperature: null,
-  raw_json_overrides: '{\n  "reasoning_effort": "high"\n}',
-  context_separator: '\n\n──────── USER INPUT ────────\n\n',
-}
-
 export const demoSources: WorkspaceSource[] = [
   { id: 'source-1', display_name: 'instructions.txt', origin_path: '/demo/instructions.txt', archive_path: null, blob_hash: '2a54d0d', original_size: 38912, line_count: 284, created_at: now },
   { id: 'source-2', display_name: 'source.zip / logs/debug.log', origin_path: '/demo/source.zip', archive_path: 'logs/debug.log', blob_hash: '8e17d10', original_size: 532480, line_count: 6402, created_at: now },
@@ -41,7 +25,7 @@ export const demoBootstrap: BootstrapState = {
     { id: 'demo-chat', title: 'Deterministic request architecture', created_at: now - 10000, updated_at: now },
     { id: 'chat-b', title: 'Large log review', created_at: now - 20000, updated_at: now - 15000 },
   ],
-  provider: demoProvider,
+  provider_catalog: { providers: [], models: [], selected_model_id: null },
   sources: demoSources,
   slices: demoSlices,
 }
@@ -57,7 +41,7 @@ export function demoSourceLines(sourceId: string, startLine: number, count: numb
   return { source_id: sourceId, start_line: startLine, total_lines: total, lines }
 }
 
-export function demoPreview(input: string, historyTokens: number, workspaceTokens: number, provider = demoProvider): RequestPreview {
+export function demoPreview(input: string, historyTokens: number, workspaceTokens: number, provider: ProviderConfig): RequestPreview {
   const compiledInput = `[compiled workspace context]${provider.context_separator}${input}`
   const request = provider.protocol === 'openai_responses'
     ? {

@@ -7,6 +7,7 @@ import { ContextSidebar } from './components/context/ContextSidebar'
 import { ProviderSettings } from './components/dialogs/ProviderSettings'
 import { RequestInspector } from './components/dialogs/RequestInspector'
 import { SourceViewer } from './components/dialogs/SourceViewer'
+import { ProviderModelSelector } from './components/model/ProviderModelSelector'
 import { ThreadSidebar } from './components/navigation/ThreadSidebar'
 import { Button } from './components/ui/Button'
 import { IconButton } from './components/ui/IconButton'
@@ -24,7 +25,7 @@ import {
   isTauri,
   removeSource,
   regenerateResponse,
-  saveProvider,
+  selectModel,
   sendMessage,
   setMessageIncluded,
   subscribeStream,
@@ -37,6 +38,7 @@ import type {
   HistoryMode,
   InsertAt,
   Message,
+  ProviderCatalog,
   RequestPreview,
   StreamPayload,
   WorkspaceSource,
@@ -80,6 +82,7 @@ export default function App() {
   const [streaming, setStreaming] = useState<{ requestId: string; text: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [catalogBusy, setCatalogBusy] = useState(false)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [compactLayout, setCompactLayout] = useState(() => typeof window !== 'undefined' && window.matchMedia(compactLayoutQuery).matches)
   const [threadsOpen, setThreadsOpen] = useState(() => typeof window === 'undefined' || !window.matchMedia(compactLayoutQuery).matches)
@@ -101,9 +104,26 @@ export default function App() {
   }, [])
 
   const refreshBootstrap = async () => {
-    const next = await bootstrap()
-    setState(next)
-    setConversationId((current) => current && next.conversations.some((item) => item.id === current) ? current : next.conversations[0]?.id ?? null)
+    try {
+      const next = await bootstrap()
+      setState(next)
+      setConversationId((current) => current && next.conversations.some((item) => item.id === current) ? current : next.conversations[0]?.id ?? null)
+    } catch (reason) {
+      setState(null)
+      setError(String(reason))
+      throw reason
+    }
+  }
+
+  const updateCatalog = (catalog: ProviderCatalog) => {
+    setState((current) => current ? { ...current, provider_catalog: catalog } : current)
+    setPreview(null)
+  }
+
+  const handleRequestError = async (reason: unknown) => {
+    setError(String(reason))
+    // Another app instance may have changed or removed the saved selection.
+    await refreshBootstrap().catch(() => { /* Bootstrap already surfaces local loading errors. */ })
   }
 
   const loadConversation = async (id: string) => {
@@ -139,13 +159,13 @@ export default function App() {
         setActiveLeafId(payload.assistant_message.id)
         restoreLeafOnErrorRef.current = null
         setStreaming(null)
-        void refreshBootstrap()
+        void refreshBootstrap().catch((reason) => setError(String(reason)))
       } else if (payload.kind === 'error') {
         setError(payload.error ?? 'Provider request failed')
         if (restoreLeafOnErrorRef.current) setActiveLeafId(restoreLeafOnErrorRef.current)
         restoreLeafOnErrorRef.current = null
         setStreaming(null)
-        void refreshBootstrap()
+        void refreshBootstrap().catch((reason) => setError(String(reason)))
       }
     }).then((cleanup) => { unlisten = cleanup })
     return () => { unlisten?.() }
@@ -158,7 +178,13 @@ export default function App() {
   const historyTokens = path.filter((message) => message.include_next).reduce((sum, message) => sum + estimateTokens(message.content), 0)
   const input = conversationId ? drafts[conversationId] ?? "" : ""
   const sendParentId = activeLeafId && byId.get(activeLeafId)?.role === "user" ? byId.get(activeLeafId)?.parent_id ?? null : activeLeafId
+  const catalog = state?.provider_catalog
+  const activeModel = catalog?.models.find((model) => `${model.provider_id}::${model.model_id}` === catalog.selected_model_id)
+  const activeProvider = catalog?.providers.find((provider) => provider.id === activeModel?.provider_id)
+  const hasActiveModel = Boolean(activeModel && activeProvider)
   const canCompile = Boolean(conversationId)
+    && hasActiveModel
+    && !catalogBusy
     && !streaming
     && (input.length > 0 || workspaceTokens > 0)
     && (historyMode !== "since_here" || Boolean(sinceMessageId))
@@ -190,7 +216,7 @@ export default function App() {
       setDrafts((current) => ({ ...current, [conversationId]: "" }))
       textareaRef.current?.focus()
     } catch (reason) {
-      setError(String(reason))
+      await handleRequestError(reason)
     } finally {
       setBusy(false)
     }
@@ -199,11 +225,11 @@ export default function App() {
   const handlePreview = async () => {
     if (!conversationId || !canCompile) return
     setError(null)
-    try { setPreview(await compileRequest(requestArgs())) } catch (reason) { setError(String(reason)) }
+    try { setPreview(await compileRequest(requestArgs())) } catch (reason) { await handleRequestError(reason) }
   }
 
   const handleRegenerate = async (assistant: Message) => {
-    if (!conversationId || busy || streaming || assistant.role !== "assistant" || !assistant.parent_id) return
+    if (!conversationId || !hasActiveModel || catalogBusy || busy || streaming || assistant.role !== "assistant" || !assistant.parent_id) return
     const user = byId.get(assistant.parent_id)
     if (!user || user.role !== "user") {
       setError("The user message for this response is no longer available.")
@@ -231,7 +257,7 @@ export default function App() {
     } catch (reason) {
       restoreLeafOnErrorRef.current = null
       setActiveLeafId(assistant.id)
-      setError(String(reason))
+      await handleRequestError(reason)
     } finally {
       setBusy(false)
     }
@@ -285,9 +311,18 @@ export default function App() {
     } catch (reason) { setError(String(reason)) }
   }
 
-  if (!state) return <div className="grid h-screen place-items-center text-sm text-muted-foreground">Opening local workspace…</div>
+  if (!state) return (
+    <div className="grid h-screen place-items-center p-6 text-sm text-muted-foreground">
+      {error ? (
+        <div className="max-w-xl rounded-2xl border border-destructive/30 bg-card p-6">
+          <h1 className="mt-0 text-lg font-semibold text-foreground">Could not open local workspace</h1>
+          <p className="break-words text-destructive" role="alert">{error}</p>
+          <Button variant="outline" onClick={() => { setError(null); void refreshBootstrap().catch((reason) => setError(String(reason))) }}>Retry</Button>
+        </div>
+      ) : 'Opening local workspace…'}
+    </div>
+  )
 
-  const providerProtocolLabel = state.provider.protocol === "openai_responses" ? "Responses API" : "Chat Completions"
   const selectLeaf = (messageId: string) => {
     stickToBottomRef.current = true
     setActiveLeafId(messageId)
@@ -323,13 +358,24 @@ export default function App() {
       />
 
       <main className="flex min-h-0 min-w-0 flex-col bg-background">
-        <header className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md">
+        <header className="relative z-20 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md">
           <div className="flex min-w-0 items-center gap-2.5">
             <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" aria-expanded={threadsOpen} aria-controls="threads-panel" onClick={toggleThreads}>Threads</Button>
-            <div className="min-w-0">
-              <span className="block truncate text-[11px] font-medium text-muted-foreground">{state.provider.name} · {providerProtocolLabel}</span>
-              <strong className="block truncate text-sm font-semibold">{state.provider.model}</strong>
-            </div>
+            <ProviderModelSelector
+              catalog={state.provider_catalog}
+              disabled={busy || catalogBusy || Boolean(streaming)}
+              onSelect={async (id) => {
+                setCatalogBusy(true)
+                try {
+                  updateCatalog(await selectModel(id))
+                } catch (reason) {
+                  await refreshBootstrap().catch(() => { /* Bootstrap already surfaces local loading errors. */ })
+                  throw reason
+                } finally {
+                  setCatalogBusy(false)
+                }
+              }}
+            />
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" aria-expanded={contextOpen} aria-controls="context-panel" onClick={toggleContext}>Context</Button>
@@ -346,11 +392,18 @@ export default function App() {
             <IconButton className="size-7 text-destructive" aria-label="Dismiss error" onClick={() => setError(null)}><X size={14} /></IconButton>
           </div>
         )}
+        {!hasActiveModel && (
+          <div className="mx-4 mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground" role="status">
+            <span>{state.provider_catalog.selected_model_id ? 'The selected model is unavailable.' : 'Choose a saved model to preview or send a request.'}</span>
+            <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(true)}>Configure providers</Button>
+          </div>
+        )}
         <ChatThread
           path={path}
           streamingText={streaming?.text ?? null}
           copiedMessageId={copiedMessageId}
           actionsDisabled={busy || Boolean(streaming)}
+          regenerateDisabled={!hasActiveModel || catalogBusy}
           messagesEndRef={messagesEndRef}
           onScroll={(event) => {
             const viewport = event.currentTarget
@@ -399,7 +452,7 @@ export default function App() {
         onMoveSlice={(slice, direction) => void moveSlice(slice, direction).catch((reason) => setError(String(reason)))}
       />
 
-      {settingsOpen && <ProviderSettings provider={state.provider} onClose={() => setSettingsOpen(false)} onSave={async (provider) => { await saveProvider(provider); await refreshBootstrap(); setSettingsOpen(false) }} />}
+      {settingsOpen && <ProviderSettings catalog={state.provider_catalog} onClose={() => setSettingsOpen(false)} onCatalogChange={updateCatalog} />}
       {preview && <RequestInspector preview={preview} onClose={() => setPreview(null)} />}
       {viewerSource && <SourceViewer source={viewerSource} onClose={() => setViewerSource(null)} onLoadLines={getSourceLines} onAdd={async (start, end) => { await addContextSlice({ sourceId: viewerSource.id, rangeType: 'lines', startPos: start, endPos: end, wrapper: 'raw', insertAt: 'before_current' }); await refreshBootstrap(); setViewerSource(null) }} />}
     </div>

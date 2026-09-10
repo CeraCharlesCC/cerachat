@@ -19,13 +19,12 @@ pub struct Message {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderConfig {
     pub id: String,
     pub name: String,
     pub protocol: String,
     pub base_url: String,
-    #[serde(default)]
     pub api_key: String,
     pub api_key_storage: String,
     pub model: String,
@@ -37,24 +36,37 @@ pub struct ProviderConfig {
     pub context_separator: String,
 }
 
-impl Default for ProviderConfig {
-    fn default() -> Self {
-        Self {
-            id: "default".into(),
-            name: "My API".into(),
-            protocol: "openai_chat_completions".into(),
-            base_url: "https://example.com/v1".into(),
-            api_key: String::new(),
-            api_key_storage: "plain_portable".into(),
-            model: "gpt-whatever".into(),
-            context_window: 131_072,
-            max_output_tokens: 16_384,
-            system_text: String::new(),
-            temperature: None,
-            raw_json_overrides: "{}".into(),
-            context_separator: "\n\n──────── USER INPUT ────────\n\n".into(),
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderProfile {
+    pub id: String,
+    pub name: String,
+    pub protocol: String,
+    pub base_url: String,
+    pub api_key_storage: String,
+    pub system_text: String,
+    #[serde(deserialize_with = "crate::portable::settings::deserialize_nullable")]
+    pub temperature: Option<f32>,
+    pub raw_json_overrides: String,
+    pub context_separator: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelProfile {
+    pub provider_id: String,
+    pub model_id: String,
+    pub name: String,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCatalog {
+    pub providers: Vec<ProviderProfile>,
+    pub models: Vec<ModelProfile>,
+    pub selected_model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +126,7 @@ pub struct RequestPreview {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootstrapState {
     pub conversations: Vec<Conversation>,
-    pub provider: ProviderConfig,
+    pub provider_catalog: ProviderCatalog,
     pub sources: Vec<WorkspaceSource>,
     pub slices: Vec<ContextSlice>,
     pub data_dir: String,

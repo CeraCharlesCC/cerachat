@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { demoBootstrap, demoMessages, demoPreview, demoSourceLines } from './demo'
+import { makeUniqueModelId, resolveProviderConfig, validateModel, validateProvider, validateProviderCatalog } from './catalog'
 import type {
   AddSliceArgs,
   BootstrapState,
@@ -8,10 +9,14 @@ import type {
   ContextSlice,
   Conversation,
   Message,
+  ModelProfile,
+  ProviderCatalog,
   ProviderConfig,
+  ProviderProfile,
   RegenerateArgs,
   SourceLines,
   StreamPayload,
+  UniqueModelId,
   UpdateSliceArgs,
   WorkspaceSource,
 } from '../types'
@@ -22,13 +27,83 @@ const browserBootstrap: BootstrapState = structuredClone(demoBootstrap)
 let browserMessages: Message[] = structuredClone(demoMessages)
 const browserListeners = new Set<(payload: StreamPayload) => void>()
 
+export const BROWSER_PROVIDER_STORAGE_KEY = 'cerachat.provider-catalog.v1'
+
+interface BrowserProviderEnvelope {
+  version: 1
+  settings: ProviderCatalog
+  secrets: { api_keys: Record<string, string> }
+}
+
+const emptyCatalog = (): ProviderCatalog => ({ providers: [], models: [], selected_model_id: null })
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
+  const actual = Object.keys(value).sort()
+  const sortedExpected = [...expected].sort()
+  return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index])
+}
+
+function validateBrowserEnvelope(value: unknown): asserts value is BrowserProviderEnvelope {
+  if (!isRecord(value) || !exactKeys(value, ['version', 'settings', 'secrets']) || value.version !== 1) {
+    throw new Error('Browser provider settings use an unsupported or invalid schema')
+  }
+  validateProviderCatalog(value.settings)
+  if (!isRecord(value.secrets) || !exactKeys(value.secrets, ['api_keys']) || !isRecord(value.secrets.api_keys)) {
+    throw new Error('Browser provider secrets have an invalid shape')
+  }
+  const providerIds = new Set(value.settings.providers.map((provider) => provider.id))
+  const secretIds = Object.keys(value.secrets.api_keys)
+  if (secretIds.length !== providerIds.size) throw new Error('Every provider must have exactly one API key entry')
+  for (const [providerId, apiKey] of Object.entries(value.secrets.api_keys)) {
+    if (!providerIds.has(providerId)) throw new Error(`API key belongs to unknown provider "${providerId}"`)
+    if (typeof apiKey !== 'string') throw new Error(`API key for provider "${providerId}" must be a string`)
+  }
+}
+
+function readBrowserEnvelope(): BrowserProviderEnvelope {
+  const stored = localStorage.getItem(BROWSER_PROVIDER_STORAGE_KEY)
+  if (stored === null) return { version: 1, settings: emptyCatalog(), secrets: { api_keys: {} } }
+  let value: unknown
+  try {
+    value = JSON.parse(stored)
+  } catch {
+    throw new Error('Browser provider settings contain malformed JSON; clear them and configure the catalog again')
+  }
+  try {
+    validateBrowserEnvelope(value)
+  } catch (reason) {
+    throw new Error(`Browser provider settings are invalid: ${reason instanceof Error ? reason.message : String(reason)}. Clear this site's stored data and configure the catalog again.`)
+  }
+  return structuredClone(value)
+}
+
+function writeBrowserEnvelope(envelope: BrowserProviderEnvelope): ProviderCatalog {
+  validateBrowserEnvelope(envelope)
+  localStorage.setItem(BROWSER_PROVIDER_STORAGE_KEY, JSON.stringify(envelope))
+  return structuredClone(envelope.settings)
+}
+
+function activeBrowserProvider(): ProviderConfig {
+  const envelope = readBrowserEnvelope()
+  const selected = envelope.settings.selected_model_id
+  const providerId = selected?.split('::')[0]
+  if (!providerId) return resolveProviderConfig(envelope.settings, '')
+  const apiKey = envelope.secrets.api_keys[providerId]
+  if (apiKey === undefined) throw new Error(`API key entry for provider "${providerId}" is missing`)
+  return resolveProviderConfig(envelope.settings, apiKey)
+}
+
 async function call<T>(name: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) throw new Error('Desktop bridge is unavailable in browser preview')
   return invoke<T>(name, args)
 }
 
 export async function bootstrap(): Promise<BootstrapState> {
-  if (!isTauri()) return structuredClone(browserBootstrap)
+  if (!isTauri()) return { ...structuredClone(browserBootstrap), provider_catalog: readBrowserEnvelope().settings }
   return call<BootstrapState>('bootstrap')
 }
 
@@ -148,20 +223,84 @@ export async function deleteContextSlice(sliceId: string): Promise<void> {
   await call('delete_context_slice', { sliceId })
 }
 
-export async function saveProvider(provider: ProviderConfig): Promise<void> {
+export async function saveProvider(provider: ProviderProfile, apiKey: string | null): Promise<ProviderCatalog> {
   if (!isTauri()) {
-    browserBootstrap.provider = structuredClone(provider)
-    return
+    validateProvider(provider)
+    const envelope = readBrowserEnvelope()
+    const index = envelope.settings.providers.findIndex((item) => item.id === provider.id)
+    if (index < 0) envelope.settings.providers.push(structuredClone(provider))
+    else envelope.settings.providers[index] = structuredClone(provider)
+    const previousApiKey = Object.prototype.hasOwnProperty.call(envelope.secrets.api_keys, provider.id)
+      ? envelope.secrets.api_keys[provider.id]
+      : ''
+    const nextApiKey = apiKey ?? previousApiKey
+    envelope.secrets.api_keys = { ...envelope.secrets.api_keys, [provider.id]: nextApiKey }
+    return writeBrowserEnvelope(envelope)
   }
-  await call('save_provider', { provider })
+  return call<ProviderCatalog>('save_provider', { provider, apiKey })
+}
+
+export async function deleteProvider(providerId: string): Promise<ProviderCatalog> {
+  if (!isTauri()) {
+    const envelope = readBrowserEnvelope()
+    if (!envelope.settings.providers.some((provider) => provider.id === providerId)) throw new Error(`Provider "${providerId}" does not exist`)
+    envelope.settings.providers = envelope.settings.providers.filter((provider) => provider.id !== providerId)
+    envelope.settings.models = envelope.settings.models.filter((model) => model.provider_id !== providerId)
+    if (envelope.settings.selected_model_id?.startsWith(`${providerId}::`)) envelope.settings.selected_model_id = null
+    delete envelope.secrets.api_keys[providerId]
+    return writeBrowserEnvelope(envelope)
+  }
+  return call<ProviderCatalog>('delete_provider', { providerId })
+}
+
+export async function saveModel(model: ModelProfile): Promise<ProviderCatalog> {
+  if (!isTauri()) {
+    validateModel(model)
+    const envelope = readBrowserEnvelope()
+    if (!envelope.settings.providers.some((provider) => provider.id === model.provider_id)) {
+      throw new Error(`Provider "${model.provider_id}" does not exist`)
+    }
+    const index = envelope.settings.models.findIndex((item) => item.provider_id === model.provider_id && item.model_id === model.model_id)
+    if (index < 0) envelope.settings.models.push(structuredClone(model))
+    else envelope.settings.models[index] = structuredClone(model)
+    return writeBrowserEnvelope(envelope)
+  }
+  return call<ProviderCatalog>('save_model', { model })
+}
+
+export async function deleteModel(providerId: string, modelId: string): Promise<ProviderCatalog> {
+  if (!isTauri()) {
+    const envelope = readBrowserEnvelope()
+    const uniqueId = makeUniqueModelId(providerId, modelId)
+    if (!envelope.settings.models.some((model) => model.provider_id === providerId && model.model_id === modelId)) {
+      throw new Error(`Model "${uniqueId}" does not exist`)
+    }
+    envelope.settings.models = envelope.settings.models.filter((model) => model.provider_id !== providerId || model.model_id !== modelId)
+    if (envelope.settings.selected_model_id === uniqueId) envelope.settings.selected_model_id = null
+    return writeBrowserEnvelope(envelope)
+  }
+  return call<ProviderCatalog>('delete_model', { providerId, modelId })
+}
+
+export async function selectModel(uniqueModelId: UniqueModelId): Promise<ProviderCatalog> {
+  if (!isTauri()) {
+    const envelope = readBrowserEnvelope()
+    if (!envelope.settings.models.some((model) => makeUniqueModelId(model.provider_id, model.model_id) === uniqueModelId)) {
+      throw new Error(`Model "${uniqueModelId}" does not exist`)
+    }
+    envelope.settings.selected_model_id = uniqueModelId
+    return writeBrowserEnvelope(envelope)
+  }
+  return call<ProviderCatalog>('select_model', { uniqueModelId })
 }
 
 export async function compileRequest(args: CompileRequestArgs): Promise<ReturnType<typeof demoPreview>> {
   if (!isTauri()) {
+    const provider = activeBrowserProvider()
     const history = browserMessages.filter((message) => message.conversation_id === args.conversationId && message.include_next)
     const historyTokens = history.reduce((sum, message) => sum + Math.ceil(message.content.length / 4), 0)
     const workspaceTokens = browserBootstrap.slices.filter((slice) => slice.enabled).reduce((sum, slice) => sum + slice.estimated_tokens, 0)
-    return demoPreview(args.input, historyTokens, workspaceTokens, browserBootstrap.provider)
+    return demoPreview(args.input, historyTokens, workspaceTokens, provider)
   }
   return call('compile_request', { args })
 }
@@ -180,6 +319,8 @@ function emitBrowser(payload: StreamPayload) {
 
 export async function sendMessage(args: CompileRequestArgs): Promise<string> {
   if (isTauri()) return call<string>('send_message', { args })
+
+  activeBrowserProvider()
 
   const requestId = crypto.randomUUID()
   const now = Date.now()
@@ -214,6 +355,8 @@ export async function sendMessage(args: CompileRequestArgs): Promise<string> {
 
 export async function regenerateResponse(args: RegenerateArgs): Promise<string> {
   if (isTauri()) return call<string>('regenerate_response', { args })
+
+  activeBrowserProvider()
 
   const user = browserMessages.find((message) => message.id === args.userMessageId)
   if (!user || user.conversation_id !== args.conversationId || user.role !== 'user') {

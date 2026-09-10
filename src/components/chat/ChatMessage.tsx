@@ -2,10 +2,11 @@ import type { Message } from '../../types'
 import { MarkdownContent } from './MarkdownContent'
 import { MessageActions } from './MessageActions'
 
-export function ChatMessage({ message, copied, actionsDisabled, onIncludedChange, onCopy, onRegenerate, onDelete }: {
+export function ChatMessage({ message, copied, actionsDisabled, regenerateDisabled, onIncludedChange, onCopy, onRegenerate, onDelete }: {
   message: Message
   copied: boolean
   actionsDisabled: boolean
+  regenerateDisabled: boolean
   onIncludedChange: (included: boolean) => void
   onCopy: () => void
   onRegenerate: () => void
@@ -25,6 +26,7 @@ export function ChatMessage({ message, copied, actionsDisabled, onIncludedChange
           message={message}
           copied={copied}
           disabled={actionsDisabled}
+          regenerateDisabled={regenerateDisabled}
           onIncludedChange={onIncludedChange}
           onCopy={onCopy}
           onRegenerate={onRegenerate}
