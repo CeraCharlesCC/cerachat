@@ -1,9 +1,13 @@
 import { ChevronDown, ChevronUp, Trash2 } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type { ContextSlice, InsertAt, WrapperMode } from '../../types'
 import { formatTokens } from '../../lib/utils'
 import { IconButton } from '../ui/IconButton'
 
 type ContextItemProps = {
+  disabled: boolean
+  dragHandle: ReactNode
+  onInspect: () => void
   slice: ContextSlice
   index: number
   count: number
@@ -12,7 +16,7 @@ type ContextItemProps = {
   onMove: (direction: -1 | 1) => void
 }
 
-export function ContextItem({ slice, index, count, onChange, onDelete, onMove }: ContextItemProps) {
+export function ContextItem({ slice, index, count, disabled, dragHandle, onInspect, onChange, onDelete, onMove }: ContextItemProps) {
   const range = slice.range_type === 'all'
     ? 'Entire file'
     : slice.range_type === 'lines'
@@ -21,19 +25,21 @@ export function ContextItem({ slice, index, count, onChange, onDelete, onMove }:
 
   return (
     <div className={`rounded-xl border border-border/60 p-2.5 ${slice.enabled ? 'bg-card' : 'bg-muted/40'}`}>
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-1.5">
+        {dragHandle}
         <input
           className="mt-1 accent-primary"
           aria-label="Include context"
           type="checkbox"
+          disabled={disabled}
           checked={slice.enabled}
           onChange={(event) => onChange({ enabled: event.target.checked })}
         />
         <div className="min-w-0 flex-1">
-          <strong className="block truncate text-xs font-medium" title={slice.source_name}>{slice.source_name}</strong>
+          <button className="block w-full truncate text-left text-xs font-medium hover:underline" title="View source and select lines" onClick={onInspect}>{slice.source_name}</button>
           <span className="mt-0.5 block truncate tabular-nums text-[11px] text-muted-foreground">{range} · ~{formatTokens(slice.estimated_tokens)}</span>
         </div>
-        <IconButton className="size-7" variant="destructive" aria-label="Remove context slice" title="Remove slice" onClick={onDelete}>
+        <IconButton className="size-7" variant="destructive" aria-label="Remove context slice" title="Remove slice" disabled={disabled} onClick={onDelete}>
           <Trash2 size={14} />
         </IconButton>
       </div>
@@ -41,6 +47,7 @@ export function ContextItem({ slice, index, count, onChange, onDelete, onMove }:
       <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-1.5">
         <select
           className="col-span-2 h-8 min-w-0 rounded-md border border-border/70 bg-background px-1.5 text-[11px] hover:bg-accent"
+          disabled={disabled}
           value={slice.wrapper}
           aria-label="Context wrapper"
           onChange={(event) => onChange({ wrapper: event.target.value as WrapperMode })}
@@ -50,6 +57,7 @@ export function ContextItem({ slice, index, count, onChange, onDelete, onMove }:
         </select>
         <select
           className="h-7 min-w-0 rounded-md border border-border/70 bg-background px-1.5 text-[11px] hover:bg-accent"
+          disabled={disabled}
           value={slice.insert_at}
           aria-label="Context insertion point"
           onChange={(event) => onChange({ insertAt: event.target.value as InsertAt })}
@@ -60,8 +68,8 @@ export function ContextItem({ slice, index, count, onChange, onDelete, onMove }:
           <option value="system">System</option>
         </select>
         <div className="flex">
-          <IconButton className="size-7 rounded-md" aria-label="Move context slice up" disabled={index === 0} onClick={() => onMove(-1)}><ChevronUp size={13} /></IconButton>
-          <IconButton className="size-7 rounded-md" aria-label="Move context slice down" disabled={index === count - 1} onClick={() => onMove(1)}><ChevronDown size={13} /></IconButton>
+          <IconButton className="size-7 rounded-md" aria-label="Move context slice up" disabled={disabled || index === 0} onClick={() => onMove(-1)}><ChevronUp size={13} /></IconButton>
+          <IconButton className="size-7 rounded-md" aria-label="Move context slice down" disabled={disabled || index === count - 1} onClick={() => onMove(1)}><ChevronDown size={13} /></IconButton>
         </div>
       </div>
     </div>

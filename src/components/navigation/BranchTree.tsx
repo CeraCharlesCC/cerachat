@@ -1,27 +1,27 @@
 import type { Message } from '../../types'
 
-function depthFor(message: Message, byId: Map<string, Message>): number {
-  let depth = 0
-  let parentId = message.parent_id
-  let guard = 0
-  while (parentId && guard < byId.size) {
-    depth += 1
-    parentId = byId.get(parentId)?.parent_id ?? null
-    guard += 1
+export function BranchTree({ messages, activeLeafId, onSelect, disabled }: { disabled: boolean; messages: Message[]; activeLeafId: string | null; onSelect: (messageId: string) => void }) {
+  const children = new Map<string | null, Message[]>()
+  for (const message of messages) children.set(message.parent_id, [...(children.get(message.parent_id) ?? []), message])
+  const rows: { message: Message; depth: number }[] = []
+  const queue = (children.get(null) ?? []).map((message) => ({ message, depth: 0 })).reverse()
+  const visited = new Set<string>()
+  while (queue.length) {
+    const row = queue.pop()!
+    if (visited.has(row.message.id)) continue
+    visited.add(row.message.id)
+    rows.push(row)
+    for (const child of [...(children.get(row.message.id) ?? [])].reverse()) queue.push({ message: child, depth: row.depth + 1 })
   }
-  return depth
-}
-
-export function BranchTree({ messages, activeLeafId, onSelect }: { messages: Message[]; activeLeafId: string | null; onSelect: (messageId: string) => void }) {
-  const byId = new Map(messages.map((message) => [message.id, message]))
 
   return (
     <div className="min-h-0 flex-1 scroll-stable overflow-y-auto px-2 pb-3">
-      {messages.map((message) => (
+      {rows.map(({ message, depth }) => (
         <button
           key={message.id}
+          disabled={disabled}
           className={`flex h-8 w-full items-center rounded-md pr-2 text-left text-xs transition-colors hover:bg-muted focus-visible:bg-muted ${message.id === activeLeafId ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
-          style={{ paddingLeft: `${10 + Math.min(depthFor(message, byId), 8) * 12}px` }}
+          style={{ paddingLeft: `${10 + Math.min(depth, 8) * 12}px` }}
           aria-current={message.id === activeLeafId ? 'true' : undefined}
           title={message.content}
           onClick={() => onSelect(message.id)}

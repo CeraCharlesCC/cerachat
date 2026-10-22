@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{collections::HashSet, io::Cursor};
 
 use rusqlite::{params, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
@@ -34,6 +34,14 @@ pub fn add_source(
 ) -> AppResult<WorkspaceSource> {
     let bytes = text.as_bytes();
     let hash = hex::encode(Sha256::digest(bytes));
+    if let Some(existing) = list_sources(db)?.into_iter().find(|source| {
+        source.blob_hash == hash
+            && source.origin_path == origin_path
+            && source.archive_path == archive_path
+            && source.display_name == display_name
+    }) {
+        return Ok(existing);
+    }
     let compressed = zstd::stream::encode_all(Cursor::new(bytes), 3)?;
     let source = WorkspaceSource {
         id: Uuid::new_v4().to_string(),
@@ -121,12 +129,15 @@ pub fn source_lines(
     let text = source_text(db, source_id)?;
     let start = start_line.max(1);
     let count = count.clamp(1, 500);
-    let lines = text
-        .lines()
-        .skip(start - 1)
-        .take(count)
-        .map(str::to_string)
-        .collect();
+    let lines = if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split('\n')
+            .skip(start - 1)
+            .take(count)
+            .map(str::to_string)
+            .collect()
+    };
     Ok(SourceLines {
         source_id: source_id.to_string(),
         start_line: start,
@@ -201,30 +212,43 @@ pub fn add_slice(db: &Database, args: AddSliceArgs) -> AppResult<ContextSlice> {
     }
     let source = get_source(db, &args.source_id)?
         .ok_or_else(|| AppError::Message("workspace source not found".into()))?;
-    let id = Uuid::new_v4().to_string();
-    let sort_order = db.with_conn(|conn| {
-        Ok(conn.query_row(
-            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM context_slices",
-            [],
-            |row| row.get(0),
-        )?)
-    })?;
-    db.with_conn(|conn| {
-        conn.execute(
-            "INSERT INTO context_slices(id,source_id,range_type,start_pos,end_pos,enabled,sort_order,wrapper,insert_at) VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8)",
-            params![id, args.source_id, args.range_type, args.start_pos, args.end_pos, sort_order, args.wrapper, args.insert_at],
-        )?;
-        Ok(())
-    })?;
+    // Validate before writing: a failed range must never poison the workspace.
     let text = source_text(db, &source.id)?;
     let selected = slice_text(&text, &args.range_type, args.start_pos, args.end_pos)?;
+    let (start_pos, end_pos) = if args.range_type == "all" {
+        (None, None)
+    } else {
+        (args.start_pos, args.end_pos)
+    };
+    let (id, sort_order) = db.with_conn_mut(|conn| {
+        let tx = conn.transaction()?;
+        let existing: Option<(String, i64)> = tx.query_row(
+            "SELECT id,sort_order FROM context_slices WHERE source_id=?1 AND range_type=?2 AND start_pos IS ?3 AND end_pos IS ?4 ORDER BY sort_order,id LIMIT 1",
+            params![args.source_id, args.range_type, start_pos, end_pos],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?;
+        let (id, sort_order) = if let Some(existing) = existing {
+            tx.execute("UPDATE context_slices SET enabled=1,wrapper=?2,insert_at=?3 WHERE id=?1", params![existing.0, args.wrapper, args.insert_at])?;
+            existing
+        } else {
+            let id = Uuid::new_v4().to_string();
+            let order: i64 = tx.query_row("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM context_slices", [], |row| row.get(0))?;
+            tx.execute(
+                "INSERT INTO context_slices(id,source_id,range_type,start_pos,end_pos,enabled,sort_order,wrapper,insert_at) VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8)",
+                params![id, args.source_id, args.range_type, start_pos, end_pos, order, args.wrapper, args.insert_at],
+            )?;
+            (id, order)
+        };
+        tx.commit()?;
+        Ok((id, sort_order))
+    })?;
     Ok(ContextSlice {
         id,
         source_id: source.id,
         source_name: source.display_name,
         range_type: args.range_type,
-        start_pos: args.start_pos,
-        end_pos: args.end_pos,
+        start_pos,
+        end_pos,
         enabled: true,
         sort_order,
         wrapper: args.wrapper,
@@ -274,4 +298,118 @@ pub fn gc_unreferenced_blobs(tx: &Transaction<'_>) -> AppResult<()> {
            AND NOT EXISTS (SELECT 1 FROM request_context rc WHERE rc.blob_hash=blobs.hash);",
     )?;
     Ok(())
+}
+
+/// Require the complete current order so concurrent changes cannot silently disappear.
+pub fn reorder_slices(db: &Database, slice_ids: &[String]) -> AppResult<()> {
+    db.with_conn_mut(|conn| {
+        let tx = conn.transaction()?;
+        let current = {
+            let mut stmt = tx.prepare("SELECT id FROM context_slices")?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<HashSet<_>, _>>()?;
+            ids
+        };
+        let requested: HashSet<_> = slice_ids.iter().cloned().collect();
+        if requested != current || requested.len() != slice_ids.len() {
+            return Err(AppError::Message(
+                "Context changed; refresh and try reordering again".into(),
+            ));
+        }
+        for (order, id) in slice_ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE context_slices SET sort_order=?2 WHERE id=?1",
+                params![id, order as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(source: &WorkspaceSource) -> AddSliceArgs {
+        AddSliceArgs {
+            source_id: source.id.clone(),
+            range_type: "all".into(),
+            start_pos: None,
+            end_pos: None,
+            wrapper: "raw".into(),
+            insert_at: "inside_current".into(),
+        }
+    }
+
+    #[test]
+    fn invalid_ranges_do_not_persist_and_repeated_includes_update_in_place() {
+        let db = Database::open(":memory:".into()).unwrap();
+        let source = add_source(
+            &db,
+            "sample.txt".into(),
+            "sample.txt".into(),
+            None,
+            "日本語\r\nsecond\n",
+        )
+        .unwrap();
+        assert_eq!(
+            add_source(
+                &db,
+                "sample.txt".into(),
+                "sample.txt".into(),
+                None,
+                "日本語\r\nsecond\n"
+            )
+            .unwrap()
+            .id,
+            source.id
+        );
+        for (start, end) in [(0, 1), (2, 1), (1, 4)] {
+            let mut invalid = args(&source);
+            invalid.range_type = "lines".into();
+            invalid.start_pos = Some(start);
+            invalid.end_pos = Some(end);
+            assert!(add_slice(&db, invalid).is_err());
+        }
+        assert!(list_slices(&db).unwrap().is_empty());
+        let slice = add_slice(&db, args(&source)).unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE context_slices SET enabled=0 WHERE id=?1",
+                [&slice.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let mut updated = args(&source);
+        updated.wrapper = "labeled".into();
+        let repeated = add_slice(&db, updated).unwrap();
+        assert_eq!(slice.id, repeated.id);
+        let slices = list_slices(&db).unwrap();
+        assert_eq!(slices.len(), 1);
+        assert!(slices[0].enabled);
+        assert_eq!(slices[0].wrapper, "labeled");
+        let last_line = source_lines(&db, &source.id, 3, 200).unwrap();
+        assert_eq!(last_line.total_lines, 3);
+        assert_eq!(last_line.lines, vec![""]);
+    }
+
+    #[test]
+    fn reorder_is_atomic_and_rejects_stale_or_duplicate_orders() {
+        let db = Database::open(":memory:".into()).unwrap();
+        let first = add_source(&db, "a.txt".into(), "a".into(), None, "A").unwrap();
+        let second = add_source(&db, "b.txt".into(), "b".into(), None, "B").unwrap();
+        let a = add_slice(&db, args(&first)).unwrap();
+        let b = add_slice(&db, args(&second)).unwrap();
+        reorder_slices(&db, &[b.id.clone(), a.id.clone()]).unwrap();
+        assert_eq!(list_slices(&db).unwrap()[0].id, b.id);
+        assert!(reorder_slices(&db, &[a.id.clone(), a.id.clone()]).is_err());
+        assert!(reorder_slices(&db, &[a.id]).is_err());
+        let order = list_slices(&db).unwrap();
+        assert_eq!(order[0].id, b.id);
+        assert_eq!(order[0].sort_order, 0);
+        assert_eq!(order[1].sort_order, 1);
+    }
 }

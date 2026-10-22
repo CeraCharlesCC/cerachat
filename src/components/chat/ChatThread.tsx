@@ -3,7 +3,9 @@ import type { Message } from '../../types'
 import { ChatMessage } from './ChatMessage'
 import { MarkdownContent } from './MarkdownContent'
 
-export function ChatThread({ path, streamingText, copiedMessageId, actionsDisabled, regenerateDisabled, messagesEndRef, onScroll, onIncludedChange, onCopy, onRegenerate, onDelete }: {
+export function ChatThread({ messages, onSelectSibling, path, streamingText, copiedMessageId, actionsDisabled, regenerateDisabled, messagesEndRef, onScroll, onIncludedChange, onCopy, onEdit, onRegenerate, onDelete }: {
+  messages: Message[]
+  onSelectSibling: (message: Message) => void
   path: Message[]
   streamingText: string | null
   copiedMessageId: string | null
@@ -12,6 +14,7 @@ export function ChatThread({ path, streamingText, copiedMessageId, actionsDisabl
   messagesEndRef: RefObject<HTMLDivElement>
   onScroll: UIEventHandler<HTMLElement>
   onIncludedChange: (message: Message, included: boolean) => void
+  onEdit: (message: Message) => void
   onCopy: (message: Message) => void
   onRegenerate: (message: Message) => void
   onDelete: (message: Message) => void
@@ -32,11 +35,14 @@ export function ChatThread({ path, streamingText, copiedMessageId, actionsDisabl
             <ChatMessage
               key={message.id}
               message={message}
+              siblings={messages.filter((item) => item.parent_id === message.parent_id)}
+              onSelectSibling={onSelectSibling}
               copied={copiedMessageId === message.id}
               actionsDisabled={actionsDisabled}
               regenerateDisabled={regenerateDisabled}
               onIncludedChange={(included) => onIncludedChange(message, included)}
               onCopy={() => onCopy(message)}
+              onEdit={() => onEdit(message)}
               onRegenerate={() => onRegenerate(message)}
               onDelete={() => onDelete(message)}
             />

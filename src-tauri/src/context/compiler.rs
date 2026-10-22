@@ -55,10 +55,10 @@ pub fn compile(
     args: &CompileRequestArgs,
 ) -> AppResult<CompiledRequest> {
     let history = select_history(db, args)?;
-    let workspace = compile_workspace(db)?;
+    let workspace = compile_workspace(db, &provider.context_separator)?;
 
     let mut system = provider.system_text.clone();
-    system.push_str(&workspace.system);
+    append_part(&mut system, &workspace.system, &provider.context_separator);
 
     let mut messages = Vec::new();
     if !workspace.before_history.is_empty() {
@@ -75,12 +75,17 @@ pub fn compile(
     let mut current = String::new();
     if !workspace.before_current.is_empty() {
         current.push_str(&workspace.before_current);
-        current.push_str(&provider.context_separator);
+        if !args.input.is_empty() {
+            current.push_str(&provider.context_separator);
+        }
     }
     current.push_str(&args.input);
     if !workspace.inside_current.is_empty() {
-        current.push_str(&provider.context_separator);
-        current.push_str(&workspace.inside_current);
+        append_part(
+            &mut current,
+            &workspace.inside_current,
+            &provider.context_separator,
+        );
     }
     if current.is_empty() {
         return Err(AppError::Message(
@@ -120,10 +125,15 @@ pub fn compile(
         .sum();
     let input_tokens = estimate_tokens(&args.input);
     let mut separator_tokens = 0;
-    if !workspace.before_current.is_empty() {
+    if !workspace.before_current.is_empty() && !args.input.is_empty() {
         separator_tokens += estimate_tokens(&provider.context_separator);
     }
-    if !workspace.inside_current.is_empty() {
+    if !workspace.inside_current.is_empty()
+        && (!workspace.before_current.is_empty() || !args.input.is_empty())
+    {
+        separator_tokens += estimate_tokens(&provider.context_separator);
+    }
+    if !provider.system_text.is_empty() && !workspace.system.is_empty() {
         separator_tokens += estimate_tokens(&provider.context_separator);
     }
     let workspace_tokens = workspace.token_estimate + separator_tokens;
@@ -185,7 +195,7 @@ fn select_history(
         .collect())
 }
 
-fn compile_workspace(db: &Database) -> AppResult<WorkspaceParts> {
+fn compile_workspace(db: &Database, separator: &str) -> AppResult<WorkspaceParts> {
     let mut parts = WorkspaceParts::default();
     let mut seen_hashes = HashSet::new();
 
@@ -207,15 +217,14 @@ fn compile_workspace(db: &Database) -> AppResult<WorkspaceParts> {
             "labeled" => format!("{}\n{}", label_for_slice(&slice), selected),
             other => return Err(AppError::Message(format!("unsupported wrapper: {other}"))),
         };
-        parts.token_estimate += estimate_tokens(&wrapped);
         if seen_hashes.insert(source.blob_hash.clone()) {
             parts.blob_hashes.push(source.blob_hash);
         }
         match slice.insert_at.as_str() {
-            "before_history" => parts.before_history.push_str(&wrapped),
-            "before_current" => parts.before_current.push_str(&wrapped),
-            "inside_current" => parts.inside_current.push_str(&wrapped),
-            "system" => parts.system.push_str(&wrapped),
+            "before_history" => append_part(&mut parts.before_history, &wrapped, separator),
+            "before_current" => append_part(&mut parts.before_current, &wrapped, separator),
+            "inside_current" => append_part(&mut parts.inside_current, &wrapped, separator),
+            "system" => append_part(&mut parts.system, &wrapped, separator),
             other => {
                 return Err(AppError::Message(format!(
                     "unsupported insertion point: {other}"
@@ -223,7 +232,27 @@ fn compile_workspace(db: &Database) -> AppResult<WorkspaceParts> {
             }
         }
     }
+    let joined_tokens: u64 = [
+        &parts.before_history,
+        &parts.before_current,
+        &parts.inside_current,
+        &parts.system,
+    ]
+    .iter()
+    .map(|part| estimate_tokens(part))
+    .sum();
+    parts.token_estimate = joined_tokens;
     Ok(parts)
+}
+
+fn append_part(target: &mut String, part: &str, separator: &str) {
+    if part.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push_str(separator);
+    }
+    target.push_str(part);
 }
 
 fn label_for_slice(slice: &crate::models::ContextSlice) -> String {
@@ -333,7 +362,73 @@ fn audit_prompt(request: &CanonicalRequest) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_overrides;
+    use super::*;
+
+    #[test]
+    fn attachment_order_and_separators_are_reflected_in_exact_requests() {
+        let db = Database::open(":memory:".into()).unwrap();
+        let conversation = chat::create_conversation(&db).unwrap();
+        let provider = ProviderConfig {
+            id: "test".into(),
+            name: "Test".into(),
+            protocol: "openai_chat_completions".into(),
+            base_url: "http://unused.invalid".into(),
+            api_key: String::new(),
+            api_key_storage: "plain_portable".into(),
+            model: "model".into(),
+            context_window: 4096,
+            max_output_tokens: 512,
+            system_text: "system".into(),
+            temperature: None,
+            raw_json_overrides: "{}".into(),
+            context_separator: "\n---\n".into(),
+        };
+        let mut ids = Vec::new();
+        for (name, text) in [("a.txt", "AAA"), ("b.txt", "BBB")] {
+            let source = db_context::add_source(&db, name.into(), name.into(), None, text).unwrap();
+            ids.push(
+                db_context::add_slice(
+                    &db,
+                    crate::models::AddSliceArgs {
+                        source_id: source.id,
+                        range_type: "all".into(),
+                        start_pos: None,
+                        end_pos: None,
+                        wrapper: "raw".into(),
+                        insert_at: "inside_current".into(),
+                    },
+                )
+                .unwrap()
+                .id,
+            );
+        }
+        let mut args = CompileRequestArgs {
+            conversation_id: conversation.id,
+            parent_id: None,
+            input: "question".into(),
+            history_mode: "full".into(),
+            since_message_id: None,
+        };
+        let before = compile(&db, &provider, &args).unwrap();
+        let json: Value = serde_json::from_str(&before.request_json).unwrap();
+        assert_eq!(
+            json["messages"][1]["content"],
+            "question\n---\nAAA\n---\nBBB"
+        );
+        ids.reverse();
+        db_context::reorder_slices(&db, &ids).unwrap();
+        let after = compile(&db, &provider, &args).unwrap();
+        let json: Value = serde_json::from_str(&after.request_json).unwrap();
+        assert_eq!(
+            json["messages"][1]["content"],
+            "question\n---\nBBB\n---\nAAA"
+        );
+        assert_ne!(before.request_sha256, after.request_sha256);
+        args.input.clear();
+        let standalone = compile(&db, &provider, &args).unwrap();
+        let json: Value = serde_json::from_str(&standalone.request_json).unwrap();
+        assert_eq!(json["messages"][1]["content"], "BBB\n---\nAAA");
+    }
 
     #[test]
     fn rejects_tool_overrides() {

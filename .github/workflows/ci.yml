@@ -47,7 +47,7 @@ jobs:
       - name: Install browser for UI checks
         run: npx playwright install --with-deps chromium
 
-      - name: Test local catalog workflows
+      - name: Test chat, context, and catalog workflows
         run: npm run test:e2e
 
   rust:

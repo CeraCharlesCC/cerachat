@@ -161,6 +161,34 @@ pub fn set_message_included(db: &Database, message_id: &str, included: bool) -> 
     })
 }
 
+/// Editing creates a sibling; existing descendants and request snapshots stay intact.
+pub fn edit_message(db: &Database, message_id: &str, content: &str) -> AppResult<Message> {
+    if content.trim().is_empty() {
+        return Err(AppError::Message("message content cannot be empty".into()));
+    }
+    db.with_conn_mut(|conn| {
+        let tx = conn.transaction()?;
+        let original = tx.query_row(
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at FROM messages WHERE id=?1",
+            [message_id], row_message,
+        ).optional()?.ok_or_else(|| AppError::Message("message not found".into()))?;
+        if original.content == content {
+            return Ok(original);
+        }
+        let edited = Message {
+            id: Uuid::new_v4().to_string(), content: content.to_string(),
+            created_at: now_ms(), ..original
+        };
+        tx.execute(
+            "INSERT INTO messages(id,conversation_id,parent_id,role,content,include_next,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![edited.id, edited.conversation_id, edited.parent_id, edited.role, edited.content, edited.include_next, edited.created_at],
+        )?;
+        tx.execute("UPDATE conversations SET updated_at=?2 WHERE id=?1", params![edited.conversation_id, edited.created_at])?;
+        tx.commit()?;
+        Ok(edited)
+    })
+}
+
 pub fn delete_conversation(db: &Database, conversation_id: &str) -> AppResult<()> {
     db.with_conn_mut(|conn| {
         let tx = conn.transaction()?;
@@ -210,4 +238,45 @@ pub fn branch_to(
     }
     reversed.reverse();
     Ok(reversed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edits_preserve_original_subtree_and_inclusion_without_sending() {
+        let db = Database::open(":memory:".into()).unwrap();
+        let chat = create_conversation(&db).unwrap();
+        let user = insert_message(&db, &chat.id, None, "user", "original").unwrap();
+        let reply = insert_message(&db, &chat.id, Some(&user.id), "assistant", "reply").unwrap();
+        set_message_included(&db, &user.id, false).unwrap();
+        let edited = edit_message(&db, &user.id, "edited\n日本語").unwrap();
+        assert_ne!(edited.id, user.id);
+        assert_eq!(edited.parent_id, user.parent_id);
+        assert_eq!(edited.role, "user");
+        assert!(!edited.include_next);
+        assert_eq!(
+            get_message(&db, &user.id).unwrap().unwrap().content,
+            "original"
+        );
+        assert_eq!(
+            get_message(&db, &reply.id).unwrap().unwrap().parent_id,
+            Some(user.id.clone())
+        );
+        let edited_reply = edit_message(&db, &reply.id, "alternative reply").unwrap();
+        assert_eq!(edited_reply.parent_id.as_deref(), Some(user.id.as_str()));
+        assert_eq!(edited_reply.role, "assistant");
+        assert_eq!(branch_to(&db, Some(&edited.id), &chat.id).unwrap().len(), 1);
+        assert_eq!(branch_to(&db, Some(&reply.id), &chat.id).unwrap().len(), 2);
+        assert_eq!(
+            edit_message(&db, &edited.id, &edited.content).unwrap().id,
+            edited.id
+        );
+        assert!(edit_message(&db, &user.id, " \n").is_err());
+        assert!(edit_message(&db, "missing", "text").is_err());
+        assert_eq!(get_messages(&db, &chat.id).unwrap().len(), 4);
+        delete_branch(&db, &edited.id).unwrap();
+        assert!(get_message(&db, &reply.id).unwrap().is_some());
+    }
 }

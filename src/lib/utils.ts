@@ -1,5 +1,5 @@
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
+  return Math.ceil(Array.from(text).length / 4)
 }
 
 export function formatTokens(tokens: number): string {

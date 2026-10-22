@@ -185,6 +185,42 @@ fn delete_branch(state: State<'_, AppState>, message_id: String) -> Result<(), S
 }
 
 #[tauri::command]
+fn edit_message(
+    state: State<'_, AppState>,
+    message_id: String,
+    content: String,
+) -> Result<models::Message, String> {
+    db::chat::edit_message(&state.db, &message_id, &content).map_err(command_error)
+}
+
+#[tauri::command]
+fn add_text_source(
+    state: State<'_, AppState>,
+    name: String,
+    text: String,
+) -> Result<models::WorkspaceSource, String> {
+    if name.trim().is_empty() || text.trim().is_empty() {
+        return Err("A name and text are required".into());
+    }
+    db::context::add_source(
+        &state.db,
+        name.trim().into(),
+        "pasted-text".into(),
+        None,
+        &text,
+    )
+    .map_err(command_error)
+}
+
+#[tauri::command]
+fn reorder_context_slices(
+    state: State<'_, AppState>,
+    slice_ids: Vec<String>,
+) -> Result<(), String> {
+    db::context::reorder_slices(&state.db, &slice_ids).map_err(command_error)
+}
+
+#[tauri::command]
 fn import_sources(
     state: State<'_, AppState>,
     paths: Vec<String>,
@@ -385,6 +421,9 @@ pub fn run() {
             delete_conversation,
             set_message_included,
             delete_branch,
+            edit_message,
+            add_text_source,
+            reorder_context_slices,
             import_sources,
             remove_source,
             get_source_lines,

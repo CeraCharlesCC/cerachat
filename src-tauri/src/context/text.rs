@@ -56,8 +56,12 @@ pub fn slice_text(
     match range_type {
         "all" => Ok(text.to_string()),
         "lines" => {
-            let start = start_pos.unwrap_or(1).max(1) as usize;
-            let end = end_pos.unwrap_or(start as i64).max(start as i64) as usize;
+            let start = start_pos.unwrap_or(1);
+            let end = end_pos.unwrap_or(start);
+            if start < 1 || end < start || end > line_count(text) {
+                return Err(AppError::Message("line range is outside the source".into()));
+            }
+            let (start, end) = (start as usize, end as usize);
             let index = TextIndex::build(text);
             let (start_byte, end_byte) = index
                 .byte_range_for_lines(text, start, end)
@@ -66,14 +70,14 @@ pub fn slice_text(
         }
         "chars" => {
             let chars: Vec<char> = text.chars().collect();
-            let start = start_pos.unwrap_or(0).max(0) as usize;
-            let end = end_pos.unwrap_or(chars.len() as i64).max(start as i64) as usize;
-            if start > chars.len() {
+            let start = start_pos.unwrap_or(0);
+            let end = end_pos.unwrap_or(chars.len() as i64);
+            if start < 0 || end < start || end > chars.len() as i64 {
                 return Err(AppError::Message(
-                    "character range starts past end of source".into(),
+                    "character range is outside the source".into(),
                 ));
             }
-            Ok(chars[start..end.min(chars.len())].iter().collect())
+            Ok(chars[start as usize..end as usize].iter().collect())
         }
         other => Err(AppError::Message(format!(
             "unsupported range type: {other}"

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { demoBootstrap, demoMessages, demoPreview, demoSourceLines } from './demo'
+import { demoBootstrap, demoMessages, demoSourceLines } from './demo'
+import { estimateTokens } from './utils'
 import { makeUniqueModelId, resolveProviderConfig, validateModel, validateProvider, validateProviderCatalog } from './catalog'
 import type {
   AddSliceArgs,
@@ -14,6 +15,7 @@ import type {
   ProviderConfig,
   ProviderProfile,
   RegenerateArgs,
+  RequestPreview,
   SourceLines,
   StreamPayload,
   UniqueModelId,
@@ -159,6 +161,60 @@ export async function deleteBranch(messageId: string): Promise<void> {
   await call('delete_branch', { messageId })
 }
 
+export async function editMessage(messageId: string, content: string): Promise<Message> {
+  if (isTauri()) return call<Message>('edit_message', { messageId, content })
+  const original = browserMessages.find((message) => message.id === messageId)
+  if (!original) throw new Error('Message not found')
+  if (!content.trim()) throw new Error('Message content cannot be empty')
+  if (original.content === content) return structuredClone(original)
+  const edited = { ...original, id: crypto.randomUUID(), content, created_at: Date.now() }
+  browserMessages.push(edited)
+  return structuredClone(edited)
+}
+
+const browserSourceTexts = new Map<string, string>()
+
+function sourceText(sourceId: string): string {
+  const stored = browserSourceTexts.get(sourceId)
+  if (stored !== undefined) return stored
+  const source = browserBootstrap.sources.find((item) => item.id === sourceId)
+  if (!source) throw new Error('Source not found')
+  return demoSourceLines(sourceId, 1, source.line_count).lines.join('\n')
+}
+
+function sliceText(args: AddSliceArgs): string {
+  const text = sourceText(args.sourceId)
+  if (args.rangeType === 'all') return text
+  const units = args.rangeType === 'lines' ? text.split('\n') : Array.from(text)
+  const offset = args.rangeType === 'lines' ? 1 : 0
+  const start = args.startPos ?? offset
+  const end = args.endPos ?? (args.rangeType === 'lines' ? start : units.length)
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < offset || end < start || end > units.length || (offset === 1 && !text)) throw new Error('Range is outside the source')
+  return units.slice(start - offset, end).join(offset ? '\n' : '') + (offset && end < units.length ? '\n' : '')
+}
+
+export async function addTextSource(name: string, text: string): Promise<WorkspaceSource> {
+  if (isTauri()) return call('add_text_source', { name, text })
+  if (!name.trim() || !text.trim()) throw new Error('A name and text are required')
+  const existing = browserBootstrap.sources.find((source) => source.origin_path === 'pasted-text' && source.display_name === name.trim() && sourceText(source.id) === text)
+  if (existing) return structuredClone(existing)
+  const source: WorkspaceSource = {
+    id: crypto.randomUUID(), display_name: name.trim(), origin_path: 'pasted-text', archive_path: null,
+    blob_hash: 'browser-text', original_size: new TextEncoder().encode(text).length,
+    line_count: text ? text.split('\n').length : 0, created_at: Date.now(),
+  }
+  browserBootstrap.sources.push(source)
+  browserSourceTexts.set(source.id, text)
+  return structuredClone(source)
+}
+
+export async function reorderContextSlices(sliceIds: string[]): Promise<void> {
+  if (isTauri()) return call('reorder_context_slices', { sliceIds })
+  const ids = new Set(sliceIds)
+  if (ids.size !== sliceIds.length || ids.size !== browserBootstrap.slices.length || browserBootstrap.slices.some((slice) => !ids.has(slice.id))) throw new Error('Context changed; refresh and try reordering again')
+  browserBootstrap.slices.forEach((slice) => { slice.sort_order = sliceIds.indexOf(slice.id) })
+}
+
 export async function importSources(paths: string[]): Promise<WorkspaceSource[]> {
   if (!isTauri()) throw new Error('File import is available in the desktop app')
   return call<WorkspaceSource[]>('import_sources', { paths })
@@ -174,7 +230,12 @@ export async function removeSource(sourceId: string): Promise<void> {
 }
 
 export async function getSourceLines(sourceId: string, startLine = 1, count = 200): Promise<SourceLines> {
-  if (!isTauri()) return demoSourceLines(sourceId, startLine, count)
+  if (!isTauri()) {
+    const text = sourceText(sourceId)
+    const lines = text ? text.split('\n') : []
+    const start = Math.max(1, startLine)
+    return { source_id: sourceId, start_line: start, total_lines: lines.length, lines: lines.slice(start - 1, start - 1 + Math.min(500, count)) }
+  }
   return call<SourceLines>('get_source_lines', { sourceId, startLine, count })
 }
 
@@ -182,18 +243,26 @@ export async function addContextSlice(args: AddSliceArgs): Promise<ContextSlice>
   if (!isTauri()) {
     const source = browserBootstrap.sources.find((item) => item.id === args.sourceId)
     if (!source) throw new Error('Source not found')
+    const selected = sliceText(args)
+    const startPos = args.rangeType === 'all' ? null : args.startPos ?? null
+    const endPos = args.rangeType === 'all' ? null : args.endPos ?? null
+    const existing = browserBootstrap.slices.find((slice) => slice.source_id === args.sourceId && slice.range_type === args.rangeType && slice.start_pos === startPos && slice.end_pos === endPos)
+    if (existing) {
+      Object.assign(existing, { enabled: true, wrapper: args.wrapper, insert_at: args.insertAt })
+      return structuredClone(existing)
+    }
     const slice: ContextSlice = {
       id: crypto.randomUUID(),
       source_id: source.id,
       source_name: source.display_name,
       range_type: args.rangeType,
-      start_pos: args.startPos ?? null,
-      end_pos: args.endPos ?? null,
+      start_pos: startPos,
+      end_pos: endPos,
       enabled: true,
-      sort_order: browserBootstrap.slices.length,
+      sort_order: Math.max(-1, ...browserBootstrap.slices.map((slice) => slice.sort_order)) + 1,
       wrapper: args.wrapper,
       insert_at: args.insertAt,
-      estimated_tokens: args.rangeType === 'all' ? Math.ceil(source.original_size / 4) : 1200,
+      estimated_tokens: estimateTokens(selected),
     }
     browserBootstrap.slices.push(slice)
     return structuredClone(slice)
@@ -294,15 +363,66 @@ export async function selectModel(uniqueModelId: UniqueModelId): Promise<Provide
   return call<ProviderCatalog>('select_model', { uniqueModelId })
 }
 
-export async function compileRequest(args: CompileRequestArgs): Promise<ReturnType<typeof demoPreview>> {
-  if (!isTauri()) {
-    const provider = activeBrowserProvider()
-    const history = browserMessages.filter((message) => message.conversation_id === args.conversationId && message.include_next)
-    const historyTokens = history.reduce((sum, message) => sum + Math.ceil(message.content.length / 4), 0)
-    const workspaceTokens = browserBootstrap.slices.filter((slice) => slice.enabled).reduce((sum, slice) => sum + slice.estimated_tokens, 0)
-    return demoPreview(args.input, historyTokens, workspaceTokens, provider)
+export async function compileRequest(args: CompileRequestArgs): Promise<RequestPreview> {
+  if (isTauri()) return call('compile_request', { args })
+  const provider = activeBrowserProvider()
+  const history: Message[] = []
+  let currentId = args.parentId
+  while (currentId) {
+    const message = browserMessages.find((item) => item.id === currentId && item.conversation_id === args.conversationId)
+    if (!message || history.length > browserMessages.length) throw new Error('Invalid history branch')
+    history.unshift(message)
+    currentId = message.parent_id
   }
-  return call('compile_request', { args })
+  let selected = history
+  if (args.historyMode === 'no_history') selected = []
+  if (args.historyMode === 'last10') selected = history.slice(-10)
+  if (args.historyMode === 'since_here') {
+    const index = history.findIndex((message) => message.id === args.sinceMessageId)
+    if (index < 0) throw new Error('Since here message is not on the active branch')
+    selected = history.slice(index)
+  }
+  selected = selected.filter((message) => message.include_next)
+  const parts = { before_current: [], inside_current: [], before_history: [], system: [] } as Record<ContextSlice['insert_at'], string[]>
+  const join = (values: string[]) => values.filter((value) => value.length > 0).join(provider.context_separator)
+  for (const slice of [...browserBootstrap.slices].sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))) {
+    if (!slice.enabled) continue
+    const text = sliceText({ sourceId: slice.source_id, rangeType: slice.range_type, startPos: slice.start_pos, endPos: slice.end_pos, wrapper: slice.wrapper, insertAt: slice.insert_at })
+    const range = slice.range_type === 'lines' ? ` L${slice.start_pos}-${slice.end_pos}` : slice.range_type === 'chars' ? ` chars ${slice.start_pos}-${slice.end_pos}` : ''
+    parts[slice.insert_at].push(slice.wrapper === 'labeled' ? `===== FILE: ${slice.source_name}${range} =====\n${text}` : text)
+  }
+  const system = join([provider.system_text, join(parts.system)])
+  const input = join([join(parts.before_current), args.input, join(parts.inside_current)])
+  if (!input) throw new Error('Request has no current user content')
+  const messages = [
+    ...(parts.before_history.length ? [{ role: 'user', content: join(parts.before_history) }] : []),
+    ...selected.map(({ role, content }) => ({ role, content })),
+    { role: 'user', content: input },
+  ]
+  const extra: unknown = JSON.parse(provider.raw_json_overrides || '{}')
+  if (!isRecord(extra)) throw new Error('Raw JSON overrides must be a JSON object')
+  const reserved = new Set(['model', 'messages', 'input', 'instructions', 'stream', 'max_tokens', 'max_completion_tokens', 'max_output_tokens', 'temperature', 'previous_response_id', 'conversation', 'prompt', 'background', 'tools', 'tool_choice', 'functions', 'function_call', 'functionDeclarations', 'parallel_tool_calls', 'web_search_options', 'mcp', 'plugins'])
+  for (const key of Object.keys(extra)) if (reserved.has(key)) throw new Error(`Raw JSON override key '${key}' is reserved; request structure is controlled by CeraChat`)
+  const temperature = provider.temperature === null ? {} : { temperature: provider.temperature }
+  const request = provider.protocol === 'openai_responses'
+    ? { ...extra, ...temperature, model: provider.model, ...(system ? { instructions: system } : {}), input: messages, stream: true, max_output_tokens: provider.max_output_tokens }
+    : { ...extra, ...temperature, model: provider.model, messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages], stream: true, max_tokens: provider.max_output_tokens }
+  const requestJson = JSON.stringify(request, null, 2)
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(requestJson))
+  const historyTokens = selected.reduce((sum, message) => sum + estimateTokens(message.content), 0)
+  let workspaceTokens = Object.values(parts).reduce((sum, values) => sum + estimateTokens(join(values)), 0)
+  const separatorCount = Number(parts.before_current.some(Boolean) && Boolean(args.input))
+    + Number(parts.inside_current.some(Boolean) && (parts.before_current.some(Boolean) || Boolean(args.input)))
+    + Number(Boolean(provider.system_text) && parts.system.some(Boolean))
+  const systemTokens = estimateTokens(provider.system_text)
+  workspaceTokens += separatorCount * estimateTokens(provider.context_separator)
+  const inputTokens = estimateTokens(args.input)
+  return {
+    request_json: requestJson,
+    compiled_prompt: [...(system ? [`[system]\n${system}`] : []), ...messages.map((message) => `[${message.role}]\n${message.content}`)].join('\n\n'),
+    request_sha256: Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+    breakdown: { system_tokens: systemTokens, history_tokens: historyTokens, workspace_tokens: workspaceTokens, input_tokens: inputTokens, estimated_input_tokens: systemTokens + historyTokens + workspaceTokens + inputTokens, configured_context: provider.context_window, max_output_tokens: provider.max_output_tokens },
+  }
 }
 
 export async function subscribeStream(handler: (payload: StreamPayload) => void): Promise<() => void> {
@@ -320,7 +440,7 @@ function emitBrowser(payload: StreamPayload) {
 export async function sendMessage(args: CompileRequestArgs): Promise<string> {
   if (isTauri()) return call<string>('send_message', { args })
 
-  activeBrowserProvider()
+  await compileRequest(args)
 
   const requestId = crypto.randomUUID()
   const now = Date.now()
@@ -362,6 +482,8 @@ export async function regenerateResponse(args: RegenerateArgs): Promise<string> 
   if (!user || user.conversation_id !== args.conversationId || user.role !== 'user') {
     throw new Error('The user message for this response is no longer available')
   }
+
+  await compileRequest({ conversationId: args.conversationId, parentId: user.parent_id, input: user.content, historyMode: args.historyMode, sinceMessageId: args.sinceMessageId })
 
   const requestId = crypto.randomUUID()
   const now = Date.now()

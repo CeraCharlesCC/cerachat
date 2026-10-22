@@ -5,6 +5,7 @@ import { IconButton } from '../ui/IconButton'
 import { BranchTree } from './BranchTree'
 
 type ThreadSidebarProps = {
+  disabled: boolean
   open: boolean
   conversations: Conversation[]
   conversationId: string | null
@@ -21,6 +22,7 @@ type ThreadSidebarProps = {
 
 export function ThreadSidebar({
   open,
+  disabled,
   conversations,
   conversationId,
   messages,
@@ -50,7 +52,7 @@ export function ThreadSidebar({
       </header>
 
       <div className="px-2 pt-2">
-        <Button variant="outline" className="w-full justify-start" onClick={onNewChat}>
+        <Button variant="outline" className="w-full justify-start" disabled={disabled} onClick={onNewChat}>
           <Plus size={16} /> New chat
         </Button>
       </div>
@@ -64,6 +66,7 @@ export function ThreadSidebar({
           >
             <button
               className="min-w-0 flex-1 truncate px-2.5 text-left text-sm"
+              disabled={disabled}
               onClick={() => onSelectConversation(conversation.id)}
               aria-current={conversation.id === conversationId ? 'page' : undefined}
               title={conversation.title}
@@ -75,6 +78,7 @@ export function ThreadSidebar({
               variant="destructive"
               aria-label={`Delete ${conversation.title}`}
               title="Delete conversation"
+              disabled={disabled}
               onClick={() => onDeleteConversation(conversation.id)}
             >
               <Trash2 size={14} />
@@ -84,7 +88,7 @@ export function ThreadSidebar({
       </div>
 
       <div className="mt-1 border-t border-border/60 px-3 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">Branches</div>
-      <BranchTree messages={messages} activeLeafId={activeLeafId} onSelect={onSelectLeaf} />
+      <BranchTree disabled={disabled} messages={messages} activeLeafId={activeLeafId} onSelect={onSelectLeaf} />
 
       <footer className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2 text-xs text-muted-foreground">
         <span>{desktop ? 'Desktop' : 'Browser demo'}</span>

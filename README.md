@@ -25,6 +25,24 @@ There are deliberately no tools, function calling, MCP, RAG, web search, model d
 
 Provider settings are saved locally without making a network request. The first Send is the first provider access.
 
+## Editing and branches
+
+Use the pencil beside any user or assistant message to edit it. **Save as new branch** stores a sibling with the same parent and inclusion setting; the original message, its descendants, and past request snapshots remain intact. An unchanged edit creates no extra message. Saving is local and never calls a provider. Use **Generate response** on the edited user message to request an answer, or continue typing after an edited assistant response.
+
+The branch counter and left/right arrows beside a message switch between its alternatives and open the latest continuation of that alternative. The sidebar groups descendants under their parents. Switching conversations remembers the selected branch for the current app session. Navigation and destructive message actions are disabled during generation.
+
+## Text attachments
+
+**Add files** imports TXT/MD/JSON/LOG/CSV files or text entries from a ZIP. **Paste text** creates a local source directly. New attachments default to file labels after the current input. Expand **New attachment options** to change the default position/format or disable automatic inclusion when importing.
+
+The source library and **Attachment order** list are separate: opening a source previews it, while the included list controls what goes into the next request. Drag an attachment's numbered grip, or use its up/down buttons, to change the order. Each attachment has an explicit insertion point and format. Within each insertion point, enabled attachments are joined in list order with the provider's context separator; raw mode preserves the selected text inside those boundaries. Request **Preview** shows the resulting JSON and compiled prompt before sending.
+
+Repeatedly including the same source and range updates and enables its existing attachment instead of duplicating it. Reimporting unchanged text from the same path reuses the source; changed content remains a separate snapshot. Opening a source supports whole-file or validated line-range inclusion, pagination, and clicking line numbers (Shift-click sets the end). Original line endings and trailing empty lines are preserved in the compiled text.
+
+Attachment order is saved in one database transaction. If another application instance changes which attachments exist, a stale reorder is rejected and refreshed. Removing a live source does not remove blobs referenced by past request logs. Context sources and inclusion settings remain workspace-wide.
+
+The desktop window disables Tauri's native file-drop interception to allow the attachment list's HTML drag and drop to work in Windows WebView2 ([Tauri configuration reference](https://v2.tauri.app/reference/config/#dragdropenabled)). File import uses the file picker.
+
 ## Provider and model catalog
 
 Create a provider with a stable ID, an editable display name, protocol, base URL, and optional API key. Save models manually under that provider with an API model ID, optional display name, context window, and maximum output tokens. System text, temperature, context separator, and JSON overrides belong to the provider; token limits belong to each model.
@@ -69,7 +87,7 @@ For a frontend-only browser preview:
 npm run dev
 ```
 
-The browser preview uses local demo data and simulates streaming. File import and real provider requests are desktop-only.
+The browser preview uses local demo data and simulates streaming. File import and real provider requests are desktop-only. Pasted text, branch editing, attachment ordering, and request compilation can also be exercised in the browser. Browser conversation/context data is demo data kept in memory for the current page lifetime; only the provider catalog persists across reloads.
 
 The browser starts with an empty provider catalog and persists it in the `cerachat.provider-catalog.v1` localStorage entry. Its versioned envelope separates public `settings` from provider-keyed `secrets` and commits both in one storage operation. Invalid data fails locally without being rewritten. To start over explicitly, remove that entry using browser developer tools and reload.
 
@@ -86,6 +104,6 @@ cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
-To use an installed Chromium browser, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` when running `npm run test:e2e`. UI tests cover local persistence, grouped search, selection restoration, strict errors, disabled requests, and absence of provider traffic during configuration.
+To use an installed Chromium browser, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` when running `npm run test:e2e`. UI tests cover catalog persistence and validation, editing and branch restoration, generation from an existing user message, attachment ordering by arrows and drag, insertion positions, duplicate inclusion, line-range validation, compact layouts, and absence of provider traffic during local configuration and editing.
 
 Rust tests also exercise failure preservation, concurrent stores, and a local mock endpoint for both supported protocols. They verify that catalog operations and compilation make no connections, then the explicit send performs one POST with the selected URL, API key, model, and output limit.

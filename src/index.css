@@ -91,12 +91,7 @@
   .field:focus { border-color: var(--ring); }
   .field-label { display: flex; min-width: 0; flex-direction: column; gap: 0.5rem; font-size: 0.75rem; font-weight: 500; }
   .message-actions { opacity: 1; }
-  @media (hover: hover) and (pointer: fine) {
-    .message-actions { opacity: 0; }
-    .group\/message:hover .message-actions,
-    .group\/message:focus-within .message-actions,
-    .message-actions:has(details[open]) { opacity: 1; }
-  }
+
 }
 
 .markdown {

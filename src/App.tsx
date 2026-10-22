@@ -6,6 +6,8 @@ import { Composer } from './components/chat/Composer'
 import { ContextSidebar } from './components/context/ContextSidebar'
 import { ProviderSettings } from './components/dialogs/ProviderSettings'
 import { RequestInspector } from './components/dialogs/RequestInspector'
+import { MessageEditor } from './components/dialogs/MessageEditor'
+import { TextSourceDialog } from './components/dialogs/TextSourceDialog'
 import { SourceViewer } from './components/dialogs/SourceViewer'
 import { ProviderModelSelector } from './components/model/ProviderModelSelector'
 import { ThreadSidebar } from './components/navigation/ThreadSidebar'
@@ -13,6 +15,9 @@ import { Button } from './components/ui/Button'
 import { IconButton } from './components/ui/IconButton'
 import {
   addContextSlice,
+  addTextSource,
+  editMessage,
+  reorderContextSlices,
   bootstrap,
   compileRequest,
   createConversation,
@@ -79,6 +84,12 @@ export default function App() {
   const [preview, setPreview] = useState<RequestPreview | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [viewerSource, setViewerSource] = useState<WorkspaceSource | null>(null)
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null)
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [attachmentWrapper, setAttachmentWrapper] = useState<WrapperMode>('labeled')
+  const [attachmentPosition, setAttachmentPosition] = useState<InsertAt>('inside_current')
+  const [autoInclude, setAutoInclude] = useState(true)
+  const selectedLeavesRef = useRef(new Map<string, string>())
   const [streaming, setStreaming] = useState<{ requestId: string; text: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -129,7 +140,8 @@ export default function App() {
   const loadConversation = async (id: string) => {
     const nextMessages = await getMessages(id)
     setMessages(nextMessages)
-    setActiveLeafId(latestLeaf(nextMessages))
+    const saved = selectedLeavesRef.current.get(id)
+    setActiveLeafId(saved && nextMessages.some((message) => message.id === saved) ? saved : latestLeaf(nextMessages))
     setStreaming(null)
     stickToBottomRef.current = true
   }
@@ -137,8 +149,22 @@ export default function App() {
   useEffect(() => { void refreshBootstrap().catch((reason) => setError(String(reason))) }, [])
 
   useEffect(() => {
+    if (conversationId && activeLeafId && messages.some((message) => message.id === activeLeafId && message.conversation_id === conversationId)) selectedLeavesRef.current.set(conversationId, activeLeafId)
+  }, [conversationId, activeLeafId, messages])
+
+  useEffect(() => {
     if (!conversationId) { setMessages([]); setActiveLeafId(null); return }
-    void loadConversation(conversationId).catch((reason) => setError(String(reason)))
+    let cancelled = false
+    setMessages([])
+    setActiveLeafId(null)
+    void getMessages(conversationId).then((nextMessages) => {
+      if (cancelled) return
+      setMessages(nextMessages)
+      const saved = selectedLeavesRef.current.get(conversationId)
+      setActiveLeafId(saved && nextMessages.some((message) => message.id === saved) ? saved : latestLeaf(nextMessages))
+      stickToBottomRef.current = true
+    }).catch((reason) => { if (!cancelled) setError(String(reason)) })
+    return () => { cancelled = true }
   }, [conversationId])
 
   useEffect(() => {
@@ -175,9 +201,16 @@ export default function App() {
   const byId = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages])
   const orderedSlices = useMemo(() => [...(state?.slices ?? [])].sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id)), [state?.slices])
   const workspaceTokens = orderedSlices.filter((slice) => slice.enabled).reduce((sum, slice) => sum + slice.estimated_tokens, 0)
-  const historyTokens = path.filter((message) => message.include_next).reduce((sum, message) => sum + estimateTokens(message.content), 0)
+  const historyTokens = useMemo(() => {
+    let selected = historyMode === 'no_history' ? [] : historyMode === 'last10' ? path.slice(-10) : path
+    if (historyMode === 'since_here') {
+      const index = path.findIndex((message) => message.id === sinceMessageId)
+      selected = index < 0 ? [] : path.slice(index)
+    }
+    return selected.filter((message) => message.include_next).reduce((sum, message) => sum + estimateTokens(message.content), 0)
+  }, [path, historyMode, sinceMessageId])
   const input = conversationId ? drafts[conversationId] ?? "" : ""
-  const sendParentId = activeLeafId && byId.get(activeLeafId)?.role === "user" ? byId.get(activeLeafId)?.parent_id ?? null : activeLeafId
+  const sendParentId = activeLeafId
   const catalog = state?.provider_catalog
   const activeModel = catalog?.models.find((model) => `${model.provider_id}::${model.model_id}` === catalog.selected_model_id)
   const activeProvider = catalog?.providers.find((provider) => provider.id === activeModel?.provider_id)
@@ -185,6 +218,7 @@ export default function App() {
   const canCompile = Boolean(conversationId)
     && hasActiveModel
     && !catalogBusy
+    && !busy
     && !streaming
     && (input.length > 0 || workspaceTokens > 0)
     && (historyMode !== "since_here" || Boolean(sinceMessageId))
@@ -229,8 +263,8 @@ export default function App() {
   }
 
   const handleRegenerate = async (assistant: Message) => {
-    if (!conversationId || !hasActiveModel || catalogBusy || busy || streaming || assistant.role !== "assistant" || !assistant.parent_id) return
-    const user = byId.get(assistant.parent_id)
+    if (!conversationId || !hasActiveModel || catalogBusy || busy || streaming) return
+    const user = assistant.role === "user" ? assistant : assistant.parent_id ? byId.get(assistant.parent_id) : undefined
     if (!user || user.role !== "user") {
       setError("The user message for this response is no longer available.")
       return
@@ -273,41 +307,48 @@ export default function App() {
     }
   }
 
-  const updateSlice = async (slice: ContextSlice, patch: { enabled?: boolean; wrapper?: WrapperMode; insertAt?: InsertAt; sortOrder?: number }) => {
-    await updateContextSlice({ sliceId: slice.id, ...patch })
-    await refreshBootstrap()
-  }
-
-  const moveSlice = async (slice: ContextSlice, direction: -1 | 1) => {
-    const index = orderedSlices.findIndex((item) => item.id === slice.id)
-    const neighbor = orderedSlices[index + direction]
-    if (!neighbor) return
-    await updateContextSlice({ sliceId: slice.id, sortOrder: neighbor.sort_order })
-    await updateContextSlice({ sliceId: neighbor.id, sortOrder: slice.sort_order })
-    await refreshBootstrap()
-  }
-
-  const addAllSources = async (wrapper: WrapperMode) => {
-    if (!state) return
+  const mutateContext = async (operation: () => Promise<unknown>) => {
+    if (busy || streaming) return
     setBusy(true)
-    try {
-      for (const source of state.sources) {
-        if (!state.slices.some((slice) => slice.source_id === source.id && slice.range_type === 'all')) {
-          await addContextSlice({ sourceId: source.id, rangeType: 'all', wrapper, insertAt: 'before_current' })
-        }
-      }
-      await refreshBootstrap()
-    } catch (reason) { setError(String(reason)) } finally { setBusy(false) }
+    setError(null)
+    setPreview(null)
+    try { await operation(); await refreshBootstrap() }
+    catch (reason) { setError(String(reason)); await refreshBootstrap().catch(() => {}) }
+    finally { setBusy(false) }
   }
+
+  const includeSource = (source: WorkspaceSource, wrapper = attachmentWrapper) => addContextSlice({ sourceId: source.id, rangeType: 'all', wrapper, insertAt: attachmentPosition })
+
+  const reorderSlices = async (draggedId: string, targetId: string) => {
+    const ids = orderedSlices.map((slice) => slice.id)
+    const from = ids.indexOf(draggedId)
+    const to = ids.indexOf(targetId)
+    if (from < 0 || to < 0 || from === to) return
+    ids.splice(from, 1)
+    ids.splice(to, 0, draggedId)
+    await mutateContext(() => reorderContextSlices(ids))
+  }
+
+  const moveSlice = (slice: ContextSlice, direction: -1 | 1) => {
+    const neighbor = orderedSlices[orderedSlices.findIndex((item) => item.id === slice.id) + direction]
+    if (neighbor) void reorderSlices(slice.id, neighbor.id)
+  }
+
+  const addAllSources = () => mutateContext(async () => {
+    for (const source of state?.sources ?? []) await includeSource(source)
+  })
 
   const handleImport = async () => {
-    if (!isTauri()) { setError('File import is available in the Tauri desktop build.'); return }
+    if (busy || streaming) return
+    if (!isTauri()) { setError('File import is available in the desktop build. Use Paste text in browser preview.'); return }
     try {
       const chosen = await open({ multiple: true, directory: false, filters: [{ name: 'Text or ZIP', extensions: ['txt', 'md', 'json', 'log', 'csv', 'zip'] }] })
       if (!chosen) return
       const paths = Array.isArray(chosen) ? chosen : [chosen]
-      await importSources(paths)
-      await refreshBootstrap()
+      await mutateContext(async () => {
+        const sources = await importSources(paths)
+        if (autoInclude) for (const source of sources) await includeSource(source)
+      })
     } catch (reason) { setError(String(reason)) }
   }
 
@@ -337,13 +378,16 @@ export default function App() {
   }
 
   return (
-    <div className="grid h-dvh overflow-hidden bg-background text-foreground grid-cols-[240px_minmax(0,1fr)_320px] max-[1180px]:grid-cols-[210px_minmax(0,1fr)_300px] max-[1100px]:grid-cols-1">
+    <div onDragOver={(event) => {
+      if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'none' }
+    }} onDrop={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} className="grid h-dvh overflow-hidden bg-background text-foreground grid-cols-[220px_minmax(0,1fr)_360px] max-[1180px]:grid-cols-[190px_minmax(0,1fr)_330px] max-[1100px]:grid-cols-1">
       {compactLayout && (threadsOpen || contextOpen) && (
         <button className="fixed inset-0 z-30 border-0 bg-black/35" aria-label="Close side panel" onClick={() => { setThreadsOpen(false); setContextOpen(false) }} />
       )}
 
       <ThreadSidebar
         open={threadsOpen}
+        disabled={busy || Boolean(streaming)}
         conversations={state.conversations}
         conversationId={conversationId}
         messages={messages}
@@ -360,7 +404,7 @@ export default function App() {
       <main className="flex min-h-0 min-w-0 flex-col bg-background">
         <header className="relative z-20 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md">
           <div className="flex min-w-0 items-center gap-2.5">
-            <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" aria-expanded={threadsOpen} aria-controls="threads-panel" onClick={toggleThreads}>Threads</Button>
+            {compactLayout && <Button variant="outline" size="sm" aria-expanded={threadsOpen} aria-controls="threads-panel" onClick={toggleThreads}>Threads</Button>}
             <ProviderModelSelector
               catalog={state.provider_catalog}
               disabled={busy || catalogBusy || Boolean(streaming)}
@@ -378,7 +422,7 @@ export default function App() {
             />
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Button variant="outline" size="sm" className="hidden max-[1100px]:inline-flex" aria-expanded={contextOpen} aria-controls="context-panel" onClick={toggleContext}>Context</Button>
+            {compactLayout && <Button variant="outline" size="sm" aria-expanded={contextOpen} aria-controls="context-panel" onClick={toggleContext}>Context</Button>}
             <IconButton aria-label="Provider settings" title="Provider settings" onClick={() => setSettingsOpen(true)}><Settings size={16} /></IconButton>
             <div className="flex w-28 flex-col items-end overflow-hidden px-1 py-1.5 tabular-nums max-sm:hidden">
               <span className="text-[11px] font-semibold">{formatTokens(historyTokens + workspaceTokens + estimateTokens(input))} input</span>
@@ -399,6 +443,18 @@ export default function App() {
           </div>
         )}
         <ChatThread
+          messages={messages}
+          onSelectSibling={(message) => {
+            let leaf = message
+            const visited = new Set<string>()
+            while (!visited.has(leaf.id)) {
+              visited.add(leaf.id)
+              const children = messages.filter((item) => item.parent_id === leaf.id)
+              if (!children.length) break
+              leaf = children[children.length - 1]
+            }
+            selectLeaf(leaf.id)
+          }}
           path={path}
           streamingText={streaming?.text ?? null}
           copiedMessageId={copiedMessageId}
@@ -413,6 +469,7 @@ export default function App() {
             setMessages((current) => current.map((item) => item.id === message.id ? { ...item, include_next: included } : item))
             void setMessageIncluded(message.id, included).catch((reason) => setError(String(reason)))
           }}
+          onEdit={setEditingMessage}
           onCopy={(message) => void handleCopyMessage(message)}
           onRegenerate={(message) => void handleRegenerate(message)}
           onDelete={(message) => { if (confirm('Delete this message and all descendants?')) void deleteBranch(message.id).then(async () => { if (conversationId) await loadConversation(conversationId); await refreshBootstrap() }).catch((reason) => setError(String(reason))) }}
@@ -441,20 +498,58 @@ export default function App() {
         sources={state.sources}
         slices={orderedSlices}
         workspaceTokens={workspaceTokens}
-        busy={busy}
+        busy={busy || Boolean(streaming)}
+        wrapper={attachmentWrapper}
+        insertAt={attachmentPosition}
+        autoInclude={autoInclude}
+        onWrapperChange={setAttachmentWrapper}
+        onInsertAtChange={setAttachmentPosition}
+        onAutoIncludeChange={setAutoInclude}
+        onPaste={() => setPasteOpen(true)}
+        onReorder={(draggedId, targetId) => void reorderSlices(draggedId, targetId)}
         onImport={() => void handleImport()}
-        onAddAll={(wrapper) => void addAllSources(wrapper)}
+        onAddAll={() => void addAllSources()}
         onOpenSource={setViewerSource}
-        onAddSource={(source) => void addContextSlice({ sourceId: source.id, rangeType: 'all', wrapper: 'raw', insertAt: 'before_current' }).then(refreshBootstrap).catch((reason) => setError(String(reason)))}
-        onRemoveSource={(source) => { if (confirm('Remove this source and its live context slices? Past request snapshots remain reproducible.')) void removeSource(source.id).then(refreshBootstrap).catch((reason) => setError(String(reason))) }}
-        onChangeSlice={(slice, patch) => void updateSlice(slice, patch).catch((reason) => setError(String(reason)))}
-        onDeleteSlice={(slice) => void deleteContextSlice(slice.id).then(refreshBootstrap).catch((reason) => setError(String(reason)))}
-        onMoveSlice={(slice, direction) => void moveSlice(slice, direction).catch((reason) => setError(String(reason)))}
+        onAddSource={(source) => void mutateContext(() => includeSource(source))}
+        onRemoveSource={(source) => { if (confirm('Remove this source and its live context slices? Past request snapshots remain reproducible.')) void mutateContext(() => removeSource(source.id)) }}
+        onChangeSlice={(slice, patch) => void mutateContext(() => updateContextSlice({ sliceId: slice.id, ...patch }))}
+        onDeleteSlice={(slice) => void mutateContext(() => deleteContextSlice(slice.id))}
+        onMoveSlice={moveSlice}
       />
 
       {settingsOpen && <ProviderSettings catalog={state.provider_catalog} onClose={() => setSettingsOpen(false)} onCatalogChange={updateCatalog} />}
       {preview && <RequestInspector preview={preview} onClose={() => setPreview(null)} />}
-      {viewerSource && <SourceViewer source={viewerSource} onClose={() => setViewerSource(null)} onLoadLines={getSourceLines} onAdd={async (start, end) => { await addContextSlice({ sourceId: viewerSource.id, rangeType: 'lines', startPos: start, endPos: end, wrapper: 'raw', insertAt: 'before_current' }); await refreshBootstrap(); setViewerSource(null) }} />}
+      {editingMessage && <MessageEditor key={editingMessage.id} message={editingMessage} onClose={() => setEditingMessage(null)} onSave={async (content) => {
+        setBusy(true)
+        try {
+          const edited = await editMessage(editingMessage.id, content)
+          setMessages((current) => [...current.filter((message) => message.id !== edited.id), edited])
+          selectLeaf(edited.id)
+          setPreview(null)
+          setEditingMessage(null)
+          await refreshBootstrap()
+        } finally { setBusy(false) }
+      }} />}
+      {pasteOpen && <TextSourceDialog onClose={() => setPasteOpen(false)} onAdd={async (name, text) => {
+        setBusy(true)
+        try {
+          const source = await addTextSource(name, text)
+          if (autoInclude) await includeSource(source)
+          await refreshBootstrap()
+          setPreview(null)
+          setPasteOpen(false)
+        } finally { setBusy(false) }
+      }} />}
+      {viewerSource && <SourceViewer key={viewerSource.id} source={viewerSource} wrapper={attachmentWrapper} insertAt={attachmentPosition} onClose={() => setViewerSource(null)} onLoadLines={getSourceLines} onAdd={async (args) => {
+        setBusy(true)
+        try {
+          await addContextSlice(args)
+          await refreshBootstrap()
+          setPreview(null)
+          setViewerSource(null)
+        } finally { setBusy(false) }
+      }} />}
+
     </div>
   )
 }

@@ -1,15 +1,16 @@
-import { Check, Copy, MoreHorizontal, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, Copy, MoreHorizontal, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
 import type { Message } from '../../types'
 import { shortId } from '../../lib/utils'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 
-export function MessageActions({ message, copied, disabled, regenerateDisabled, onIncludedChange, onCopy, onRegenerate, onDelete }: {
+export function MessageActions({ message, copied, disabled, regenerateDisabled, onIncludedChange, onCopy, onEdit, onRegenerate, onDelete }: {
   message: Message
   copied: boolean
   disabled: boolean
   regenerateDisabled: boolean
   onIncludedChange: (included: boolean) => void
+  onEdit: () => void
   onCopy: () => void
   onRegenerate: () => void
   onDelete: () => void
@@ -30,6 +31,10 @@ export function MessageActions({ message, copied, disabled, regenerateDisabled, 
       <IconButton className="size-7" aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy message'} onClick={onCopy}>
         {copied ? <Check size={15} /> : <Copy size={15} />}
       </IconButton>
+      <IconButton className="size-7" aria-label="Edit message" title="Edit into a new branch" disabled={disabled} onClick={onEdit}><Pencil size={15} /></IconButton>
+      {message.role === 'user' && (
+        <IconButton className="size-7" aria-label="Generate response" title="Generate response from this message" disabled={disabled || regenerateDisabled} onClick={onRegenerate}><Play size={15} /></IconButton>
+      )}
       {message.role === 'assistant' && (
         <IconButton className="size-7" aria-label="Regenerate response" title="Regenerate response" disabled={disabled || regenerateDisabled} onClick={onRegenerate}>
           <RefreshCw size={15} />
