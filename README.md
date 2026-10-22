@@ -75,6 +75,10 @@ To configure from scratch after an incompatible file, close the application and 
 
 ## Development
 
+Use Node.js 22 and rustup. `rust-toolchain.toml` pins the Rust compiler and
+components used by both local development and CI; update that file deliberately
+when upgrading Rust so ordinary compiler releases do not invalidate build caches.
+
 ```bash
 npm install
 cargo install tauri-cli --version "^2"
@@ -100,10 +104,31 @@ npx playwright install chromium
 npm run test:e2e
 cd src-tauri
 cargo fmt --all -- --check
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
 ```
 
 To use an installed Chromium browser, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` when running `npm run test:e2e`. UI tests cover catalog persistence and validation, editing and branch restoration, generation from an existing user message, attachment ordering by arrows and drag, insertion positions, duplicate inclusion, line-range validation, compact layouts, and absence of provider traffic during local configuration and editing.
 
 Rust tests also exercise failure preservation, concurrent stores, and a local mock endpoint for both supported protocols. They verify that catalog operations and compilation make no connections, then the explicit send performs one POST with the selected URL, API key, model, and output limit.
+
+## CI builds and caches
+
+Frontend checks run in the official Playwright container, which already includes
+the browsers, fonts, and system libraries. When updating Playwright in
+`package-lock.json`, update the `frontend` job's `playwright` matrix version in
+`.github/workflows/ci.yml` too; CI checks that they match before installing npm
+dependencies.
+
+Frontend checks, Rust checks, and the Windows portable build run in parallel.
+Windows artifacts are available as soon as that build finishes, even if another
+check is still running or fails. Check the complete workflow result before
+distributing an artifact; this workflow does not publish a release.
+
+Rust dependency caches are separate for Linux checks and Windows release builds
+and include the compiler, build environment, and Cargo manifests/lockfile in their
+keys. Completed dependency builds can be saved even if a later check fails. CI
+omits debug symbols for Linux checks to reduce compilation and cache size; Windows
+still uses the normal release profile. A first run after changing the toolchain
+or cache configuration can be cold, and GitHub may evict caches between infrequent
+runs. Cargo commands use `--locked` to prevent implicit dependency updates.

@@ -22,6 +22,13 @@ jobs:
     name: Frontend checks
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      matrix:
+        # Keep this equal to playwright-core in package-lock.json.
+        playwright: ['1.63.0']
+    container:
+      image: mcr.microsoft.com/playwright:v${{ matrix.playwright }}-noble
+      options: --ipc=host
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,6 +42,19 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Verify Playwright image matches lockfile
+        env:
+          PLAYWRIGHT_IMAGE_VERSION: ${{ matrix.playwright }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          const version = lock.packages['node_modules/playwright-core'].version;
+          if (version !== process.env.PLAYWRIGHT_IMAGE_VERSION) {
+            throw new Error(`Playwright ${version} requires updating the frontend job's playwright matrix version to match.`);
+          }
+          NODE
+
       - name: Install frontend dependencies
         run: npm ci --no-audit --no-fund
 
@@ -44,9 +64,6 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Install browser for UI checks
-        run: npx playwright install --with-deps chromium
-
       - name: Test chat, context, and catalog workflows
         run: npm run test:e2e
 
@@ -54,6 +71,10 @@ jobs:
     name: Rust checks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      # CI needs diagnostics, but not large debug-symbol artifacts.
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     defaults:
       run:
         working-directory: src-tauri
@@ -76,28 +97,29 @@ jobs:
             libxdo-dev
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+        # rustup installs the exact toolchain and components from the repository.
+        run: rustup show
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: true
+          cache-bin: false
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run Rust tests
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
 
       - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   windows-portable:
     name: Windows portable build
     if: github.event_name != 'pull_request'
-    needs: [frontend, rust]
+    # Build immediately; the workflow still fails if either check job fails.
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -114,12 +136,14 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup show
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: true
+          cache-bin: false
 
       - name: Install frontend dependencies
         run: npm ci --no-audit --no-fund
@@ -128,7 +152,7 @@ jobs:
         run: npm run build
 
       - name: Build portable executable
-        run: cargo build --release --features custom-protocol --manifest-path src-tauri/Cargo.toml
+        run: cargo build --locked --release --features custom-protocol --manifest-path src-tauri/Cargo.toml
 
       - name: Package portable build
         shell: pwsh
