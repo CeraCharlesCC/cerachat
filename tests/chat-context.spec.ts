@@ -57,20 +57,22 @@ async function previewCurrent(page: Page): Promise<string> {
   return request.messages[request.messages.length - 1].content
 }
 
-test('editing a user creates a sibling, preserves descendants, and generates without duplicating the user', async ({ page }) => {
+test('editing a user inline creates a sibling, preserves descendants, and generates without duplicating the user', async ({ page }) => {
   await openWithModel(page)
   const external: string[] = []
   page.on('request', (request) => { if (!request.url().startsWith('http://127.0.0.1:4173/')) external.push(request.url()) })
   const before = await browserMessages(page)
   await page.getByRole('button', { name: 'Edit message', exact: true }).first().click()
-  const editor = page.getByRole('dialog', { name: 'Edit message' })
+  const editor = page.getByRole('article', { name: 'User message' }).first().getByRole('form', { name: 'Edit message' })
+  await expect(page.getByRole('dialog', { name: 'Edit message' })).toHaveCount(0)
+  await expect(editor.getByLabel('Edited message')).toBeFocused()
   const save = editor.getByRole('button', { name: 'Save as new branch' })
   await expect(save).toBeDisabled()
   await editor.getByLabel('Edited message').fill('  ')
   await expect(save).toBeDisabled()
   await editor.getByLabel('Edited message').fill('Edited prompt 日本語')
   await save.click()
-  await expect(editor).toHaveCount(0)
+  await expect(page.getByRole('form', { name: 'Edit message' })).toHaveCount(0)
   await expect(page.getByRole('main').locator('article')).toHaveCount(1)
   const after = await browserMessages(page)
   expect(after).toHaveLength(before.length + 1)
@@ -97,7 +99,7 @@ test('assistant edits can be cancelled, branch independently, and survive conver
   await articles.last().getByRole('button', { name: 'Edit message' }).click()
   await page.getByLabel('Edited message').fill('Unsaved content')
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog', { name: 'Edit message' })).toHaveCount(0)
+  await expect(page.getByRole('form', { name: 'Edit message' })).toHaveCount(0)
   await expect(articles.last().getByRole('button', { name: 'Edit message' })).toBeFocused()
   await expect(articles.last()).not.toContainText('Unsaved content')
   await articles.last().getByRole('button', { name: 'Edit message' }).click()
@@ -108,6 +110,73 @@ test('assistant edits can be cancelled, branch independently, and survive conver
   await expect(articles).toHaveCount(0)
   await page.locator('#threads-panel').getByRole('button', { name: 'Deterministic request architecture', exact: true }).click()
   await expect(articles.last()).toContainText('A saved assistant alternative')
+})
+
+test('inline editing keeps the composer draft and handles newlines, IME, cancellation, and keyboard save', async ({ page }) => {
+  await openWithModel(page)
+  const draft = page.getByRole('textbox', { name: 'Message input', exact: true })
+  await draft.fill('Unsent draft 日本語')
+  const before = await browserMessages(page)
+  const user = page.getByRole('article', { name: 'User message' }).last()
+  await user.hover()
+  await user.getByRole('button', { name: 'Edit message', exact: true }).click()
+  const editor = user.getByRole('form', { name: 'Edit message' })
+  const text = editor.getByLabel('Edited message')
+  await text.fill('**Literal prompt** 日本語')
+  await text.press('End')
+  await text.press('Enter')
+  await text.press('Shift+Enter')
+  await expect(text).toHaveValue('**Literal prompt** 日本語\n\n')
+  await text.dispatchEvent('keydown', { key: 'Escape', isComposing: true })
+  await text.dispatchEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true })
+  await text.dispatchEvent('keydown', { key: 'Enter', ctrlKey: true, keyCode: 229 })
+  await expect(editor).toBeVisible()
+  expect(await browserMessages(page)).toEqual(before)
+  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled()
+  await expect(draft).toHaveValue('Unsent draft 日本語')
+  await editor.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(user.getByRole('button', { name: 'Edit message', exact: true })).toBeFocused()
+  await user.getByRole('button', { name: 'Edit message', exact: true }).click()
+  await expect(text).toHaveValue(before.find((message) => message.id === 'u2')!.content)
+  await text.fill('**Literal prompt** 日本語\nSecond line')
+  await text.press('Control+Enter')
+  await expect(page.getByRole('form', { name: 'Edit message' })).toHaveCount(0)
+  await expect(user).toContainText('**Literal prompt** 日本語')
+  await expect(user.locator('strong')).toHaveCount(0)
+  await expect(draft).toHaveValue('Unsent draft 日本語')
+  await expect(draft).toBeFocused()
+  expect(await browserMessages(page)).toHaveLength(before.length + 1)
+})
+
+test('failed inline saves retain the edit and allow retry on a compact screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.route('**/src/lib/backend.ts*', async (route) => {
+    const response = await route.fetch()
+    await route.fulfill({ response, body: `${await response.text()}\nconst originalEditMessage = editMessage;
+      let failEdit = true;
+      editMessage = async (...args) => {
+        if (failEdit) { failEdit = false; throw new Error('Could not save edit'); }
+        return originalEditMessage(...args);
+      };` })
+  })
+  await openWithModel(page)
+  const user = page.getByRole('article', { name: 'User message' }).last()
+  await user.getByRole('button', { name: 'Edit message', exact: true }).click()
+  const editor = user.getByRole('form', { name: 'Edit message' })
+  const content = Array.from({ length: 30 }, (_, index) => `Line ${index}: 日本語の編集 ${'long'.repeat(20)}`).join('\n')
+  await editor.getByLabel('Edited message').fill(content)
+  await editor.getByRole('button', { name: 'Save as new branch' }).click()
+  await expect(editor.getByRole('alert')).toContainText('Could not save edit')
+  await expect(editor.getByLabel('Edited message')).toHaveValue(content)
+  await expect(editor.getByRole('button', { name: 'Save as new branch' })).toBeEnabled()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+  const box = (await editor.boundingBox())!
+  expect(box.x).toBeGreaterThanOrEqual(0)
+  expect(box.x + box.width).toBeLessThanOrEqual(390)
+  await editor.getByRole('button', { name: 'Save as new branch' }).click()
+  await expect(page.getByRole('form', { name: 'Edit message' })).toHaveCount(0)
+  await expect(user).toContainText('Line 29: 日本語の編集')
 })
 
 test('attachment arrows and drag order change compiled text, with separators, positions, and no duplicate includes', async ({ page }) => {

@@ -90,7 +90,6 @@
   .field::placeholder { color: var(--muted-foreground); }
   .field:focus { border-color: var(--ring); }
   .field-label { display: flex; min-width: 0; flex-direction: column; gap: 0.5rem; font-size: 0.75rem; font-weight: 500; }
-  .message-actions { opacity: 1; }
   .chat-main { container-type: inline-size; }
   .resize-handle {
     position: relative;
@@ -116,6 +115,13 @@
   .resize-handle:hover::after, .resize-handle:focus-visible::after, .resize-handle.is-resizing::after { opacity: 1; background: var(--foreground); }
   .resize-handle.is-resizing::before { content: ''; position: fixed; inset: 0; cursor: inherit; }
 
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .group\/message:not([data-last-assistant="true"]) .message-action-row { opacity: 0; }
+  .group\/message:hover .message-action-row,
+  .group\/message:focus-within .message-action-row,
+  .group\/message:has(details[open]) .message-action-row { opacity: 1; }
 }
 
 .markdown {

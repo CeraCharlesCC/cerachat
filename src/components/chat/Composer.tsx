@@ -5,7 +5,7 @@ import { estimateTokens, formatTokens } from '../../lib/utils'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 
-export function Composer({ height, textareaRef, input, historyMode, sinceMessageId, path, historyTokens, workspaceTokens, canCompile, busy, streaming, onInputChange, onHistoryModeChange, onSinceMessageChange, onPreview, onSend }: {
+export function Composer({ height, textareaRef, input, historyMode, sinceMessageId, path, historyTokens, workspaceTokens, canCompile, busy, streaming, editing, onInputChange, onHistoryModeChange, onSinceMessageChange, onPreview, onSend }: {
   height: number
   textareaRef: RefObject<HTMLTextAreaElement>
   input: string
@@ -17,6 +17,7 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
   canCompile: boolean
   busy: boolean
   streaming: boolean
+  editing: boolean
   onInputChange: (value: string) => void
   onHistoryModeChange: (mode: HistoryMode) => void
   onSinceMessageChange: (messageId: string | null) => void
@@ -24,7 +25,7 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
   onSend: () => void
 }) {
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault()
       onSend()
     }
@@ -50,7 +51,7 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
           </select>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-input bg-card p-2 shadow-sm transition-colors focus-within:border-ring">
+        <form aria-label="Send message" onSubmit={(event) => { event.preventDefault(); if (canCompile) onSend() }} className="flex min-h-0 flex-1 flex-col rounded-2xl border border-input bg-card p-2 shadow-sm transition-colors focus-within:border-ring">
           <textarea
             ref={textareaRef}
             className="scroll-stable block min-h-0 w-full flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2 text-[15px] leading-6 text-card-foreground outline-none placeholder:text-muted-foreground"
@@ -63,15 +64,15 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
             onKeyDown={handleKeyDown}
           />
           <div className="mt-1 flex shrink-0 items-end justify-between gap-2">
-            <span className="min-w-0 truncate px-3 pb-2 text-xs tabular-nums text-muted-foreground" title={`${input.length.toLocaleString()} characters`}>{input.length.toLocaleString()} chars</span>
+            <span className="min-w-0 truncate px-3 pb-2 text-xs tabular-nums text-muted-foreground" title={editing ? 'Finish editing the message above. Your unsent draft is kept here.' : `${input.length.toLocaleString()} characters`}>{editing ? 'Editing message · draft kept' : `${input.length.toLocaleString()} chars`}</span>
             <div className="flex items-center gap-1.5">
               <Button variant="ghost" size="sm" disabled={!canCompile} onClick={onPreview}>Preview</Button>
-              <IconButton variant="primary" className="size-8" disabled={busy || !canCompile} onClick={onSend} aria-label="Send message" title="Send message (Enter)">
+              <IconButton type="submit" variant="primary" className="size-8" disabled={busy || !canCompile} aria-label="Send message" title="Send message (Enter)">
                 {streaming || busy ? <LoaderCircle className="animate-spin" size={16} /> : <ArrowUp size={16} />}
               </IconButton>
             </div>
           </div>
-        </div>
+        </form>
         <div className="mt-2 grid grid-cols-3 gap-2 px-2 text-[11px] tabular-nums text-muted-foreground" aria-label="Estimated tokens">
           {([['History', historyTokens], ['Context', workspaceTokens], ['Input', estimateTokens(input)]] as const).map(([label, tokens]) => (
             <span key={label} className="flex min-w-0 items-center justify-between gap-1">

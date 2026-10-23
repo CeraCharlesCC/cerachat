@@ -6,7 +6,6 @@ import { Composer } from './components/chat/Composer'
 import { ContextSidebar } from './components/context/ContextSidebar'
 import { ProviderSettings } from './components/dialogs/ProviderSettings'
 import { RequestInspector } from './components/dialogs/RequestInspector'
-import { MessageEditor } from './components/dialogs/MessageEditor'
 import { TextSourceDialog } from './components/dialogs/TextSourceDialog'
 import { ReferenceSourceDialog } from './components/dialogs/ReferenceSourceDialog'
 import { SourceViewer } from './components/dialogs/SourceViewer'
@@ -246,6 +245,7 @@ export default function App() {
     && !catalogBusy
     && !busy
     && !streaming
+    && !editingMessage
     && (input.length > 0 || workspaceTokens > 0)
     && (historyMode !== "since_here" || Boolean(sinceMessageId))
 
@@ -391,6 +391,7 @@ export default function App() {
   )
 
   const selectLeaf = (messageId: string) => {
+    setEditingMessage(null)
     stickToBottomRef.current = true
     setActiveLeafId(messageId)
   }
@@ -489,6 +490,7 @@ export default function App() {
           streamingText={streaming?.text ?? null}
           streamingReasoning={streaming?.reasoning ?? null}
           copiedMessageId={copiedMessageId}
+          editingMessageId={editingMessage?.id ?? null}
           actionsDisabled={busy || Boolean(streaming)}
           regenerateDisabled={!hasActiveModel || catalogBusy}
           messagesEndRef={messagesEndRef}
@@ -496,11 +498,33 @@ export default function App() {
             const viewport = event.currentTarget
             stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48
           }}
+          onJumpToLatest={() => {
+            stickToBottomRef.current = true
+            messagesEndRef.current?.scrollIntoView({ block: 'end' })
+            if (!editingMessage) textareaRef.current?.focus({ preventScroll: true })
+          }}
           onIncludedChange={(message, included) => {
             setMessages((current) => current.map((item) => item.id === message.id ? { ...item, include_next: included } : item))
             void setMessageIncluded(message.id, included).catch((reason) => setError(String(reason)))
           }}
-          onEdit={setEditingMessage}
+          onEdit={(message) => {
+            stickToBottomRef.current = false
+            setPreview(null)
+            setEditingMessage(message)
+          }}
+          onCancelEdit={() => setEditingMessage(null)}
+          onSaveEdit={async (content) => {
+            if (!editingMessage || busy || streaming) return
+            setBusy(true)
+            try {
+              const edited = await editMessage(editingMessage.id, content)
+              setMessages((current) => [...current.filter((message) => message.id !== edited.id), edited])
+              selectLeaf(edited.id)
+              setPreview(null)
+              textareaRef.current?.focus({ preventScroll: true })
+              void refreshBootstrap().catch((reason) => setError(String(reason)))
+            } finally { setBusy(false) }
+          }}
           onCopy={(message) => void handleCopyMessage(message)}
           onRegenerate={(message) => void handleRegenerate(message)}
           onDelete={(message) => { if (confirm('Delete this message and all descendants?')) void deleteBranch(message.id).then(async () => { if (conversationId) await loadConversation(conversationId); await refreshBootstrap() }).catch((reason) => setError(String(reason))) }}
@@ -518,6 +542,7 @@ export default function App() {
           canCompile={canCompile}
           busy={busy}
           streaming={Boolean(streaming)}
+          editing={Boolean(editingMessage)}
           onInputChange={(value) => { if (conversationId) setDrafts((current) => ({ ...current, [conversationId]: value })) }}
           onHistoryModeChange={setHistoryMode}
           onSinceMessageChange={setSinceMessageId}
@@ -555,17 +580,6 @@ export default function App() {
 
       {settingsOpen && <ProviderSettings catalog={state.provider_catalog} onClose={() => setSettingsOpen(false)} onCatalogChange={updateCatalog} />}
       {preview && <RequestInspector preview={preview} onClose={() => setPreview(null)} />}
-      {editingMessage && <MessageEditor key={editingMessage.id} message={editingMessage} onClose={() => setEditingMessage(null)} onSave={async (content) => {
-        setBusy(true)
-        try {
-          const edited = await editMessage(editingMessage.id, content)
-          setMessages((current) => [...current.filter((message) => message.id !== edited.id), edited])
-          selectLeaf(edited.id)
-          setPreview(null)
-          setEditingMessage(null)
-          await refreshBootstrap()
-        } finally { setBusy(false) }
-      }} />}
       {referenceOpen && conversationId && <ReferenceSourceDialog
         sources={state.sources.filter((source) => source.conversation_id !== conversationId)}
         conversations={state.conversations}

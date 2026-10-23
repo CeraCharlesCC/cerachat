@@ -81,6 +81,29 @@ test('explains usage-only reasoning and leaves ordinary answers uncluttered', as
   await expect(panel).toContainText('did not return visible reasoning text')
 })
 
+test('streaming follows the bottom, preserves a reader scrolling up, and offers a jump back', async ({ page }) => {
+  await openWithStream(page)
+  const messages = page.getByRole('region', { name: 'Conversation messages' })
+  const jump = page.getByRole('button', { name: 'Scroll to latest message' })
+  const bottomGap = () => messages.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)
+  await emit(page, { ...request, kind: 'started' })
+  await emit(page, { ...request, kind: 'delta', text: 'A long response\n\n'.repeat(80) })
+  await expect.poll(bottomGap).toBeLessThan(48)
+  await expect(jump).toHaveCount(0)
+  await messages.hover()
+  await page.mouse.wheel(0, -700)
+  await expect(jump).toBeVisible()
+  const readingPosition = await messages.evaluate((element) => element.scrollTop)
+  await emit(page, { ...request, kind: 'delta', text: 'More response\n\n'.repeat(40) })
+  await expect.poll(() => messages.evaluate((element) => element.scrollTop)).toBe(readingPosition)
+  await jump.click()
+  await expect.poll(bottomGap).toBeLessThan(48)
+  await expect(jump).toHaveCount(0)
+  await expect(page.getByRole('textbox', { name: 'Message input', exact: true })).toBeFocused()
+  await emit(page, { ...request, kind: 'delta', text: 'The final section\n\n'.repeat(20) })
+  await expect.poll(bottomGap).toBeLessThan(48)
+})
+
 test('summary setting preserves other overrides, survives reload, and appears in request preview', async ({ page }) => {
   await openWithStream(page)
   const external: string[] = []
