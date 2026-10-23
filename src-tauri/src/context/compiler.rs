@@ -69,7 +69,7 @@ pub fn compile(
     }
     messages.extend(history.iter().map(|message| CanonicalMessage {
         role: message.role.clone(),
-        content: message.content.clone(),
+        content: history_content(message),
     }));
 
     let mut current = String::new();
@@ -121,7 +121,7 @@ pub fn compile(
     let system_tokens = estimate_tokens(&provider.system_text);
     let history_tokens = history
         .iter()
-        .map(|message| estimate_tokens(&message.content))
+        .map(|message| estimate_tokens(&history_content(message)))
         .sum();
     let input_tokens = estimate_tokens(&args.input);
     let mut separator_tokens = 0;
@@ -154,6 +154,33 @@ pub fn compile(
         breakdown,
         context_blob_hashes: workspace.blob_hashes,
     })
+}
+
+// Visible reasoning is sent as ordinary labeled assistant text. Native Responses
+// reasoning replay requires original output items, which are not stored here.
+fn history_content(message: &crate::models::Message) -> String {
+    if message.role != "assistant" {
+        return message.content.clone();
+    }
+    let mut parts = Vec::new();
+    if let Some(reasoning) = &message.reasoning {
+        for part in reasoning
+            .parts
+            .iter()
+            .filter(|part| part.include_next && !part.text.is_empty())
+        {
+            let label = if part.kind == "summary" {
+                "Selected reasoning summary"
+            } else {
+                "Selected reasoning text"
+            };
+            parts.push(format!("[{label}]\n{}\n[/{label}]", part.text));
+        }
+    }
+    if !message.content.is_empty() {
+        parts.push(message.content.clone());
+    }
+    parts.join("\n\n")
 }
 
 fn select_history(
@@ -311,7 +338,10 @@ fn openai_request_json(request: &CanonicalRequest) -> AppResult<String> {
     );
     body.insert("messages".into(), Value::Array(messages));
     body.insert("stream".into(), Value::Bool(true));
-    body.insert("max_tokens".into(), Value::from(request.max_output_tokens));
+    body.insert(
+        "max_completion_tokens".into(),
+        Value::from(request.max_output_tokens),
+    );
     if let Some(temperature) = request.temperature {
         body.insert("temperature".into(), Value::from(temperature));
     }
@@ -467,6 +497,122 @@ mod tests {
         let standalone = compile(&db, &provider, &args).unwrap();
         let json: Value = serde_json::from_str(&standalone.request_json).unwrap();
         assert_eq!(json["messages"][1]["content"], "BBB\n---\nAAA");
+    }
+
+    #[test]
+    fn reasoning_is_opt_in_per_block_for_both_protocols_and_respects_history_selection() {
+        let db = Database::open(":memory:".into()).unwrap();
+        let conversation = chat::create_conversation(&db).unwrap();
+        let user = chat::insert_message(&db, &conversation.id, None, "user", "question").unwrap();
+        let reasoning: crate::models::Reasoning = serde_json::from_value(serde_json::json!({
+            "parts": [
+                { "id": "s", "kind": "summary", "text": "visible summary" },
+                { "id": "t", "kind": "text", "text": "visible steps" }
+            ], "tokens": 42, "encrypted": true
+        }))
+        .unwrap();
+        let reply = chat::insert_message_with_reasoning(
+            &db,
+            &conversation.id,
+            Some(&user.id),
+            "assistant",
+            "answer",
+            Some(reasoning),
+        )
+        .unwrap();
+        let sibling = chat::insert_message(
+            &db,
+            &conversation.id,
+            Some(&user.id),
+            "assistant",
+            "other answer",
+        )
+        .unwrap();
+        let mut args = CompileRequestArgs {
+            conversation_id: conversation.id,
+            parent_id: Some(reply.id.clone()),
+            input: "next".into(),
+            history_mode: "full".into(),
+            since_message_id: None,
+        };
+        let mut provider = ProviderConfig {
+            id: "test".into(),
+            name: "Test".into(),
+            protocol: "openai_chat_completions".into(),
+            base_url: "http://unused.invalid".into(),
+            api_key: String::new(),
+            api_key_storage: "plain_portable".into(),
+            model: "model".into(),
+            context_window: 4096,
+            max_output_tokens: 512,
+            system_text: String::new(),
+            temperature: None,
+            raw_json_overrides: "{}".into(),
+            context_separator: "\n---\n".into(),
+        };
+        for protocol in ["openai_chat_completions", "openai_responses"] {
+            provider.protocol = protocol.into();
+            chat::set_reasoning_part_included(&db, &reply.id, "s", false).unwrap();
+            let excluded = compile(&db, &provider, &args).unwrap();
+            assert!(!excluded.request_json.contains("visible summary"));
+            assert!(!excluded.compiled_prompt.contains("visible steps"));
+            chat::set_reasoning_part_included(&db, &reply.id, "s", true).unwrap();
+            let selected = compile(&db, &provider, &args).unwrap();
+            let body: Value = serde_json::from_str(&selected.request_json).unwrap();
+            let items = &body[if protocol == "openai_responses" {
+                "input"
+            } else {
+                "messages"
+            }];
+            assert_eq!(items[1]["role"], "assistant");
+            assert_eq!(items[1]["content"], "[Selected reasoning summary]\nvisible summary\n[/Selected reasoning summary]\n\nanswer");
+            assert!(!selected.request_json.contains("visible steps"));
+            assert!(!selected.request_json.contains("encrypted"));
+            assert!(selected
+                .compiled_prompt
+                .contains("[assistant]\n[Selected reasoning summary]"));
+            assert_ne!(excluded.request_sha256, selected.request_sha256);
+            assert!(selected.breakdown.history_tokens > excluded.breakdown.history_tokens);
+            assert_eq!(
+                selected.request_sha256,
+                compile(&db, &provider, &args).unwrap().request_sha256
+            );
+
+            chat::set_message_included(&db, &reply.id, false).unwrap();
+            assert!(!compile(&db, &provider, &args)
+                .unwrap()
+                .request_json
+                .contains("visible summary"));
+            chat::set_message_included(&db, &reply.id, true).unwrap();
+            args.history_mode = "no_history".into();
+            assert!(!compile(&db, &provider, &args)
+                .unwrap()
+                .request_json
+                .contains("visible summary"));
+            args.history_mode = "full".into();
+            args.parent_id = Some(sibling.id.clone());
+            assert!(!compile(&db, &provider, &args)
+                .unwrap()
+                .request_json
+                .contains("visible summary"));
+            args.parent_id = Some(reply.id.clone());
+            chat::set_reasoning_part_included(&db, &reply.id, "s", false).unwrap();
+            assert_eq!(
+                excluded.request_sha256,
+                compile(&db, &provider, &args).unwrap().request_sha256
+            );
+        }
+        chat::set_reasoning_part_included(&db, &reply.id, "s", true).unwrap();
+        chat::set_reasoning_part_included(&db, &reply.id, "t", true).unwrap();
+        let both = compile(&db, &provider, &args).unwrap();
+        assert!(
+            both.compiled_prompt.find("visible summary").unwrap()
+                < both.compiled_prompt.find("visible steps").unwrap()
+        );
+        assert!(
+            both.compiled_prompt.find("visible steps").unwrap()
+                < both.compiled_prompt.find("\n\nanswer").unwrap()
+        );
     }
 
     #[test]

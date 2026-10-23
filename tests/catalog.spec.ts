@@ -8,14 +8,13 @@ async function seedCatalog(page: Page) {
     const provider = {
       id: 'alpha', name: 'Alpha Gateway', protocol: 'openai_chat_completions',
       base_url: 'https://alpha.invalid/v1', api_key_storage: 'plain_portable',
-      system_text: 'Alpha system', temperature: 0.4,
-      raw_json_overrides: '{}', context_separator: '\n\n',
+      system_text: 'Alpha system', context_separator: '\n\n',
     }
     await backend.saveProvider(provider, 'alpha-secret')
     await backend.saveProvider({ ...provider, id: 'beta', name: 'Beta Local', protocol: 'openai_responses', base_url: 'http://127.0.0.1:11434/v1' }, 'beta-secret')
-    await backend.saveModel({ provider_id: 'alpha', model_id: 'shared-api', name: 'Friendly Alpha', context_window: 128000, max_output_tokens: 4096 })
-    await backend.saveModel({ provider_id: 'alpha', model_id: 'tiny-api', name: 'Tiny', context_window: 32000, max_output_tokens: 1024 })
-    await backend.saveModel({ provider_id: 'beta', model_id: 'shared-api', name: 'Friendly Beta', context_window: 64000, max_output_tokens: 2048 })
+    await backend.saveModel({ provider_id: 'alpha', model_id: 'shared-api', name: 'Friendly Alpha', context_window: 128000, max_output_tokens: 4096, temperature: 0.4, raw_json_overrides: '{}' })
+    await backend.saveModel({ provider_id: 'alpha', model_id: 'tiny-api', name: 'Tiny', context_window: 32000, max_output_tokens: 1024, temperature: null, raw_json_overrides: '{}' })
+    await backend.saveModel({ provider_id: 'beta', model_id: 'shared-api', name: 'Friendly Beta', context_window: 64000, max_output_tokens: 2048, temperature: null, raw_json_overrides: '{}' })
     await backend.selectModel('alpha::shared-api')
   })
   await page.reload()
@@ -145,7 +144,7 @@ test('strict browser schema rejects inconsistent records without changing storag
     const mutations = [
       (data: Record<string, unknown>) => { delete data.version },
       (data: Record<string, unknown>) => { data.version = '1' },
-      (data: Record<string, unknown>) => { data.version = 2 },
+      (data: Record<string, unknown>) => { data.version = 987 },
       (data: Record<string, unknown>) => { data.unexpected = true },
     ]
     const invalid = mutations.map((mutate) => { const data = JSON.parse(valid); mutate(data); return JSON.stringify(data) })
@@ -164,7 +163,7 @@ test('strict browser schema rejects inconsistent records without changing storag
         case 'unknown-secret': data.secrets.api_keys.orphan = 'secret'; break
         case 'missing-secret': delete data.secrets.api_keys.alpha; break
         case 'missing-selection': delete data.settings.selected_model_id; break
-        case 'missing-temperature': delete data.settings.providers[0].temperature; break
+        case 'missing-temperature': delete data.settings.models[0].temperature; break
         case 'string-limit': data.settings.models[0].context_window = '64000'; break
         case 'zero-limit': data.settings.models[0].context_window = 0; break
         case 'fraction-limit': data.settings.models[0].context_window = 1.5; break
@@ -286,7 +285,7 @@ test('catalog editor creates, edits and deletes locally with explicit key update
   await expect(page.getByRole('button', { name: /Renamed Model from Renamed Gateway/ })).toBeVisible()
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
   const preview = page.getByRole('dialog', { name: 'Request preview' })
-  await expect(preview.locator('pre').first()).toContainText('"max_tokens": 2048')
+  await expect(preview.locator('pre').first()).toContainText('"max_completion_tokens": 2048')
   await preview.getByRole('button', { name: 'Close', exact: true }).click()
 
   await settingsButton.click()
@@ -342,3 +341,91 @@ for (const action of ['Preview', 'Send message', 'Regenerate response']) {
     expect(after).toEqual(before)
   })
 }
+
+test('model parameters are independent, toggled, synchronized with raw JSON and encoded for each API', async ({ page }) => {
+  await page.goto('/')
+  await seedCatalog(page)
+  await page.getByRole('main').getByRole('button', { name: 'Provider settings', exact: true }).click()
+  const editor = page.getByRole('dialog', { name: 'Provider settings' })
+  await expect(editor.getByLabel('Temperature', { exact: true })).toHaveCount(0)
+  await editor.getByRole('button', { name: /Friendly Alpha/ }).click()
+  await expect(editor.getByRole('switch', { name: 'Enable Temperature', exact: true })).toBeChecked()
+  await editor.getByLabel('Temperature', { exact: true }).fill('0')
+  await editor.getByRole('switch', { name: 'Enable Reasoning effort', exact: true }).click()
+  await editor.getByLabel('Reasoning effort', { exact: true }).fill('high')
+  await editor.getByRole('switch', { name: 'Enable Verbosity', exact: true }).click()
+  await editor.getByLabel('Verbosity', { exact: true }).fill('low')
+  await editor.getByRole('switch', { name: 'Enable Frequency penalty', exact: true }).click()
+  await editor.getByLabel('Frequency penalty', { exact: true }).fill('')
+  await editor.getByLabel('Frequency penalty', { exact: true }).pressSequentially('-0.5')
+  await expect(editor.getByLabel('Reasoning summary', { exact: true })).toHaveCount(0)
+  await editor.getByRole('switch', { name: 'Enable Store response', exact: true }).click()
+  expect(JSON.parse(await editor.getByLabel('Raw JSON overrides').inputValue())).toEqual({ reasoning_effort: 'high', verbosity: 'low', frequency_penalty: -0.5, store: false })
+  await editor.getByRole('button', { name: 'Save model', exact: true }).click()
+  await editor.getByRole('button', { name: /Tiny/ }).click()
+  await expect(editor.getByRole('switch', { name: 'Enable Temperature', exact: true })).not.toBeChecked()
+  await expect(editor.getByLabel('Temperature', { exact: true })).toBeDisabled()
+  await expect(editor.getByRole('switch', { name: 'Enable Reasoning effort', exact: true })).not.toBeChecked()
+  await expect(editor.getByLabel('Raw JSON overrides')).toHaveValue('{}')
+  await editor.getByRole('button', { name: 'Beta Local beta', exact: true }).click()
+  await editor.getByRole('button', { name: /Friendly Beta/ }).click()
+  await expect(editor.getByLabel('Frequency penalty', { exact: true })).toHaveCount(0)
+  await editor.getByLabel('Raw JSON overrides').fill('{"reasoning":{"effort":"xhigh","summary":"auto","custom":true},"text":{"verbosity":"high","format":{"type":"text"}},"store":false,"custom":42}')
+  await expect(editor.getByLabel('Reasoning effort', { exact: true })).toHaveValue('xhigh')
+  await editor.getByRole('switch', { name: 'Enable Reasoning summary', exact: true }).click()
+  await editor.getByRole('switch', { name: 'Enable Reasoning effort', exact: true }).click()
+  expect(JSON.parse(await editor.getByLabel('Raw JSON overrides').inputValue()).reasoning).toEqual({ custom: true })
+  await editor.getByRole('switch', { name: 'Enable Reasoning effort', exact: true }).click()
+  await expect(editor.getByLabel('Reasoning effort', { exact: true })).toHaveValue('xhigh')
+  await editor.getByRole('switch', { name: 'Enable Top P', exact: true }).click()
+  await editor.getByLabel('Top P', { exact: true }).fill('0.75')
+  await editor.getByRole('button', { name: 'Save model', exact: true }).click()
+  await editor.getByRole('button', { name: 'Done', exact: true }).click()
+  await page.reload()
+  const bodies = await page.evaluate(async () => {
+    const backend = await import('/src/lib/backend.ts')
+    const args = { conversationId: 'demo-chat', parentId: null, input: 'Question', historyMode: 'no_history' }
+    await backend.selectModel('alpha::shared-api')
+    const chat = JSON.parse((await backend.compileRequest(args)).request_json)
+    await backend.selectModel('beta::shared-api')
+    const responses = JSON.parse((await backend.compileRequest(args)).request_json)
+    await backend.selectModel('alpha::tiny-api')
+    const tiny = JSON.parse((await backend.compileRequest(args)).request_json)
+    return { chat, responses, tiny }
+  })
+  expect(bodies.chat).toMatchObject({ temperature: 0, reasoning_effort: 'high', verbosity: 'low', frequency_penalty: -0.5, store: false, max_completion_tokens: 4096 })
+  expect(bodies.chat).not.toHaveProperty('reasoning')
+  expect(bodies.chat).not.toHaveProperty('max_tokens')
+  expect(bodies.responses).toMatchObject({ reasoning: { effort: 'xhigh', custom: true }, text: { verbosity: 'high', format: { type: 'text' } }, store: false, custom: 42, top_p: 0.75, max_output_tokens: 2048 })
+  expect(bodies.responses).not.toHaveProperty('reasoning.summary')
+  expect(bodies.responses).not.toHaveProperty('temperature')
+  expect(bodies.tiny).not.toHaveProperty('temperature')
+  expect(bodies.tiny).not.toHaveProperty('reasoning_effort')
+})
+
+test('version 1 parameters migrate to every existing model and persist only on an explicit save', async ({ page }) => {
+  await page.goto('/')
+  const legacy = JSON.stringify({ version: 1, settings: {
+    providers: [{ id: 'old', name: 'Old', protocol: 'openai_responses', base_url: 'https://unused.invalid/v1', api_key_storage: 'plain_portable', system_text: '', context_separator: '\n', temperature: 0.3, raw_json_overrides: '{"reasoning":{"effort":"high"},"store":false}' }],
+    models: ['one', 'two'].map((model_id) => ({ provider_id: 'old', model_id, name: '', context_window: 4096, max_output_tokens: 512 })),
+    selected_model_id: 'old::one',
+  }, secrets: { api_keys: { old: 'preserved' } } })
+  const result = await page.evaluate(async ({ key, legacy }) => {
+    localStorage.setItem(key, legacy)
+    const backend = await import('/src/lib/backend.ts')
+    const catalog = (await backend.bootstrap()).provider_catalog
+    const unchanged = localStorage.getItem(key) === legacy
+    await backend.saveModel({ ...catalog.models[0], temperature: null, raw_json_overrides: '{}' })
+    await backend.selectModel('old::two')
+    const body = JSON.parse((await backend.compileRequest({ conversationId: 'demo-chat', parentId: null, input: 'Question', historyMode: 'no_history' })).request_json)
+    return { catalog, unchanged, saved: JSON.parse(localStorage.getItem(key)!), body }
+  }, { key: storageKey, legacy })
+  expect(result.unchanged).toBe(true)
+  for (const model of result.catalog.models) expect(model).toMatchObject({ temperature: 0.3, raw_json_overrides: '{"reasoning":{"effort":"high"},"store":false}' })
+  expect(result.catalog.providers[0]).not.toHaveProperty('temperature')
+  expect(result.catalog.providers[0]).not.toHaveProperty('raw_json_overrides')
+  expect(result.saved.version).toBe(2)
+  expect(result.saved.secrets.api_keys).toEqual({ old: 'preserved' })
+  expect(result.saved.settings.models[0].temperature).toBeNull()
+  expect(result.body).toMatchObject({ temperature: 0.3, reasoning: { effort: 'high' }, store: false })
+})

@@ -15,7 +15,7 @@ use crate::{
     models::{ModelProfile, ProviderCatalog, ProviderConfig, ProviderProfile},
 };
 
-const SETTINGS_VERSION: u32 = 1;
+const SETTINGS_VERSION: u32 = 2;
 const SECRETS_VERSION: u32 = 1;
 const SETTINGS_FILE: &str = "settings.json";
 const LEGACY_SECRETS_FILE: &str = "secrets.json";
@@ -29,6 +29,106 @@ struct SettingsFile {
     selected_model_id: Option<String>,
     providers: Vec<ProviderProfile>,
     models: Vec<ModelProfile>,
+}
+
+// Version 1 stored request parameters on providers. Keep its schema strict and
+// inherit those values into every existing model without rewriting files on read.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySettingsFile {
+    version: u32,
+    secret_generation: String,
+    #[serde(deserialize_with = "deserialize_nullable")]
+    selected_model_id: Option<String>,
+    providers: Vec<LegacyProviderProfile>,
+    models: Vec<LegacyModelProfile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyProviderProfile {
+    id: String,
+    name: String,
+    protocol: String,
+    base_url: String,
+    api_key_storage: String,
+    system_text: String,
+    #[serde(deserialize_with = "deserialize_nullable")]
+    temperature: Option<f32>,
+    raw_json_overrides: String,
+    context_separator: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyModelProfile {
+    provider_id: String,
+    model_id: String,
+    name: String,
+    context_window: u32,
+    max_output_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum VersionedSettingsFile {
+    Current(SettingsFile),
+    Legacy(LegacySettingsFile),
+}
+
+impl VersionedSettingsFile {
+    fn upgrade(self) -> AppResult<SettingsFile> {
+        match self {
+            Self::Current(settings) if settings.version == SETTINGS_VERSION => Ok(settings),
+            Self::Legacy(settings) if settings.version == 1 => {
+                let mut models = Vec::new();
+                for model in settings.models {
+                    let provider = settings
+                        .providers
+                        .iter()
+                        .find(|p| p.id == model.provider_id)
+                        .ok_or_else(|| {
+                            AppError::Message("legacy model references an unknown provider".into())
+                        })?;
+                    models.push(ModelProfile {
+                        provider_id: model.provider_id,
+                        model_id: model.model_id,
+                        name: model.name,
+                        context_window: model.context_window,
+                        max_output_tokens: model.max_output_tokens,
+                        temperature: provider.temperature,
+                        raw_json_overrides: provider.raw_json_overrides.clone(),
+                    });
+                }
+                // Validate even providers with no models before discarding legacy fields.
+                for provider in &settings.providers {
+                    validate_parameters(provider.temperature, &provider.raw_json_overrides)?;
+                }
+                Ok(SettingsFile {
+                    version: SETTINGS_VERSION,
+                    secret_generation: settings.secret_generation,
+                    selected_model_id: settings.selected_model_id,
+                    providers: settings
+                        .providers
+                        .into_iter()
+                        .map(|p| ProviderProfile {
+                            id: p.id,
+                            name: p.name,
+                            protocol: p.protocol,
+                            base_url: p.base_url,
+                            api_key_storage: p.api_key_storage,
+                            system_text: p.system_text,
+                            context_separator: p.context_separator,
+                        })
+                        .collect(),
+                    models,
+                })
+            }
+            _ => Err(AppError::Message(
+                "unsupported settings version or schema".into(),
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -263,13 +363,7 @@ fn load_unlocked(data_dir: &Path) -> AppResult<LoadedCatalog> {
         ));
     }
 
-    let settings: SettingsFile = read_json(&settings_path, "settings")?;
-    if settings.version != SETTINGS_VERSION {
-        return Err(AppError::Message(format!(
-            "unsupported settings version {}; expected {}",
-            settings.version, SETTINGS_VERSION
-        )));
-    }
+    let settings = read_json::<VersionedSettingsFile>(&settings_path, "settings")?.upgrade()?;
     validate_generation(&settings.secret_generation)?;
     let secrets_path = secret_path(data_dir, &settings.secret_generation);
     if !secrets_path.is_file() {
@@ -340,8 +434,8 @@ fn resolve_active(loaded: LoadedCatalog) -> AppResult<ProviderConfig> {
         context_window: model.context_window,
         max_output_tokens: model.max_output_tokens,
         system_text: provider.system_text.clone(),
-        temperature: provider.temperature,
-        raw_json_overrides: provider.raw_json_overrides.clone(),
+        temperature: model.temperature,
+        raw_json_overrides: model.raw_json_overrides.clone(),
         context_separator: provider.context_separator.clone(),
     })
 }
@@ -442,17 +536,20 @@ fn validate_provider(provider: &ProviderProfile) -> AppResult<()> {
             provider.api_key_storage
         )));
     }
-    if provider.temperature.is_some_and(|value| !value.is_finite()) {
-        return Err(AppError::Message(
-            "provider temperature must be finite".into(),
-        ));
+
+    Ok(())
+}
+
+fn validate_parameters(temperature: Option<f32>, raw_json_overrides: &str) -> AppResult<()> {
+    if temperature.is_some_and(|value| !value.is_finite()) {
+        return Err(AppError::Message("model temperature must be finite".into()));
     }
-    let overrides: Value = serde_json::from_str(&provider.raw_json_overrides).map_err(|error| {
-        AppError::Message(format!("provider raw_json_overrides is invalid: {error}"))
+    let overrides: Value = serde_json::from_str(raw_json_overrides).map_err(|error| {
+        AppError::Message(format!("model raw_json_overrides is invalid: {error}"))
     })?;
     if !overrides.is_object() {
         return Err(AppError::Message(
-            "provider raw_json_overrides must be a JSON object".into(),
+            "model raw_json_overrides must be a JSON object".into(),
         ));
     }
     Ok(())
@@ -461,6 +558,7 @@ fn validate_provider(provider: &ProviderProfile) -> AppResult<()> {
 fn validate_model(model: &ModelProfile) -> AppResult<()> {
     validate_id("model provider_id", &model.provider_id)?;
     validate_id("model id", &model.model_id)?;
+    validate_parameters(model.temperature, &model.raw_json_overrides)?;
     if model.context_window == 0 || model.max_output_tokens == 0 {
         return Err(AppError::Message(
             "model token limits must be greater than zero".into(),
@@ -741,8 +839,6 @@ mod tests {
             base_url: format!("https://{id}.example/v1"),
             api_key_storage: "plain_portable".into(),
             system_text: "system".into(),
-            temperature: Some(0.25),
-            raw_json_overrides: "{}".into(),
             context_separator: "\n---\n".into(),
         }
     }
@@ -753,6 +849,8 @@ mod tests {
             name: format!("Model {model_id}"),
             context_window: 8_192,
             max_output_tokens: 1_024,
+            temperature: Some(0.25),
+            raw_json_overrides: "{}".into(),
         }
     }
     fn configured_store() -> (TempDir, SettingsStore) {
@@ -866,6 +964,46 @@ mod tests {
     }
 
     #[test]
+    fn legacy_parameters_inherit_per_model_without_rewriting_until_save() {
+        let (dir, store) = configured_store();
+        store.save_model(model("alpha", "two")).unwrap();
+        let path = dir.0.join(SETTINGS_FILE);
+        let mut legacy: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        legacy["version"] = Value::from(1);
+        legacy["providers"][0]["temperature"] = serde_json::json!(0.25);
+        legacy["providers"][0]["raw_json_overrides"] =
+            Value::String(r#"{"reasoning":{"effort":"high"},"store":false}"#.into());
+        for model in legacy["models"].as_array_mut().unwrap() {
+            model.as_object_mut().unwrap().remove("temperature");
+            model.as_object_mut().unwrap().remove("raw_json_overrides");
+        }
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let catalog = store.load_catalog().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        for model in &catalog.models {
+            assert_eq!(model.temperature, Some(0.25));
+            assert!(model.raw_json_overrides.contains("high"));
+        }
+        let mut changed = catalog.models[0].clone();
+        changed.temperature = None;
+        changed.raw_json_overrides = "{}".into();
+        store.save_model(changed).unwrap();
+        let persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["version"], 2);
+        assert!(persisted["providers"][0].get("temperature").is_none());
+        assert!(persisted["providers"][0]
+            .get("raw_json_overrides")
+            .is_none());
+        assert_eq!(store.load_active_provider().unwrap().temperature, None);
+        store.select_model("alpha::two").unwrap();
+        let resolved = store.load_active_provider().unwrap();
+        assert_eq!(resolved.temperature, Some(0.25));
+        assert!(resolved.raw_json_overrides.contains("high"));
+        assert_eq!(resolved.api_key, "secret-a");
+    }
+
+    #[test]
     fn resolver_has_no_fallback_when_selection_is_missing() {
         let dir = TempDir::new();
         let store = SettingsStore::new(dir.0.clone());
@@ -922,7 +1060,7 @@ mod tests {
                 value.as_object_mut().unwrap().remove("selected_model_id");
             },
             |value: &mut Value| {
-                value["providers"][0]
+                value["models"][0]
                     .as_object_mut()
                     .unwrap()
                     .remove("temperature");
@@ -1128,7 +1266,7 @@ mod tests {
             (
                 "openai_chat_completions",
                 "/v1/chat/completions",
-                "max_tokens",
+                "max_completion_tokens",
                 r#"{"choices":[{"delta":{"content":"hello"}}]}"#,
             ),
             (

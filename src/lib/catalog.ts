@@ -64,7 +64,7 @@ export function parseUniqueModelId(value: string): { providerId: string; modelId
 
 export function validateProvider(provider: unknown): asserts provider is ProviderProfile {
   if (!isRecord(provider) || !hasExactKeys(provider, [
-    'id', 'name', 'protocol', 'base_url', 'api_key_storage', 'system_text', 'temperature', 'raw_json_overrides', 'context_separator',
+    'id', 'name', 'protocol', 'base_url', 'api_key_storage', 'system_text', 'context_separator',
   ])) throw new Error('Provider has an invalid shape')
 
   assertProviderId(provider.id)
@@ -75,22 +75,11 @@ export function validateProvider(provider: unknown): asserts provider is Provide
   if (!provider.base_url.trim()) throw new Error(`Provider ${provider.id} base URL must not be empty`)
   if (provider.api_key_storage !== 'plain_portable') throw new Error(`Provider ${provider.id} has an unsupported API key storage mode`)
   assertString(provider.system_text, `Provider ${provider.id} system text`)
-  if (provider.temperature !== null && (typeof provider.temperature !== 'number' || !Number.isFinite(provider.temperature))) {
-    throw new Error(`Provider ${provider.id} temperature must be a finite number or null`)
-  }
-  assertString(provider.raw_json_overrides, `Provider ${provider.id} raw JSON overrides`)
-  let overrides: unknown
-  try {
-    overrides = JSON.parse(provider.raw_json_overrides)
-  } catch {
-    throw new Error(`Provider ${provider.id} raw JSON overrides must be valid JSON`)
-  }
-  if (!isRecord(overrides)) throw new Error(`Provider ${provider.id} raw JSON overrides must be a JSON object`)
   assertString(provider.context_separator, `Provider ${provider.id} context separator`)
 }
 
 export function validateModel(model: unknown): asserts model is ModelProfile {
-  if (!isRecord(model) || !hasExactKeys(model, ['provider_id', 'model_id', 'name', 'context_window', 'max_output_tokens'])) {
+  if (!isRecord(model) || !hasExactKeys(model, ['provider_id', 'model_id', 'name', 'context_window', 'max_output_tokens', 'temperature', 'raw_json_overrides'])) {
     throw new Error('Model has an invalid shape')
   }
   assertIdentifier(model.provider_id, 'Model provider ID')
@@ -98,6 +87,17 @@ export function validateModel(model: unknown): asserts model is ModelProfile {
   assertString(model.name, `Model ${model.provider_id}::${model.model_id} name`)
   assertPositiveInteger(model.context_window, `Model ${model.provider_id}::${model.model_id} context window`)
   assertPositiveInteger(model.max_output_tokens, `Model ${model.provider_id}::${model.model_id} max output tokens`)
+  if (model.temperature !== null && (typeof model.temperature !== 'number' || !Number.isFinite(model.temperature))) {
+    throw new Error(`Model ${model.provider_id}::${model.model_id} temperature must be a finite number or null`)
+  }
+  assertString(model.raw_json_overrides, `Model ${model.provider_id}::${model.model_id} raw JSON overrides`)
+  let overrides: unknown
+  try {
+    overrides = JSON.parse(model.raw_json_overrides)
+  } catch {
+    throw new Error(`Model ${model.provider_id}::${model.model_id} raw JSON overrides must be valid JSON`)
+  }
+  if (!isRecord(overrides)) throw new Error(`Model ${model.provider_id}::${model.model_id} raw JSON overrides must be a JSON object`)
 }
 
 export function validateProviderCatalog(catalog: unknown): asserts catalog is ProviderCatalog {
@@ -152,5 +152,7 @@ export function resolveProviderConfig(catalog: ProviderCatalog, apiKey: string):
     model: active.model.model_id,
     context_window: active.model.context_window,
     max_output_tokens: active.model.max_output_tokens,
+    temperature: active.model.temperature,
+    raw_json_overrides: active.model.raw_json_overrides,
   }
 }

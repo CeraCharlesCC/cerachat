@@ -185,6 +185,34 @@ pub fn set_message_included(db: &Database, message_id: &str, included: bool) -> 
     })
 }
 
+pub fn set_reasoning_part_included(
+    db: &Database,
+    message_id: &str,
+    part_id: &str,
+    included: bool,
+) -> AppResult<()> {
+    db.with_conn_mut(|conn| {
+        let tx = conn.transaction()?;
+        let mut message = tx.query_row(
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json FROM messages WHERE id=?1",
+            [message_id], row_message,
+        ).optional()?.ok_or_else(|| AppError::Message("message not found".into()))?;
+        if message.role != "assistant" {
+            return Err(AppError::Message("reasoning requires an assistant message".into()));
+        }
+        let reasoning = message.reasoning.as_mut().ok_or_else(|| AppError::Message("reasoning block not found".into()))?;
+        let part = reasoning.parts.iter_mut().find(|part| part.id == part_id)
+            .ok_or_else(|| AppError::Message("reasoning block not found".into()))?;
+        if included && part.text.is_empty() {
+            return Err(AppError::Message("reasoning block has no visible text".into()));
+        }
+        part.include_next = included;
+        tx.execute("UPDATE messages SET reasoning_json=?2 WHERE id=?1", params![message_id, serde_json::to_string(reasoning)?])?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
 /// Editing creates a sibling; existing descendants and request snapshots stay intact.
 pub fn edit_message(db: &Database, message_id: &str, content: &str) -> AppResult<Message> {
     if content.trim().is_empty() {
@@ -280,6 +308,7 @@ mod tests {
                 id: "summary-0".into(),
                 kind: "summary".into(),
                 text: "Saved summary 日本語".into(),
+                include_next: false,
             }],
             tokens: Some(42),
             encrypted: true,
@@ -308,6 +337,18 @@ mod tests {
             edit_message(&db, &reply.id, "answer").unwrap().reasoning,
             Some(reasoning.clone())
         );
+        assert!(set_reasoning_part_included(&db, "missing", "summary-0", true).is_err());
+        assert!(set_reasoning_part_included(&db, &user.id, "summary-0", true).is_err());
+        assert!(set_reasoning_part_included(&db, &reply.id, "missing", true).is_err());
+        set_reasoning_part_included(&db, &reply.id, "summary-0", true).unwrap();
+        let mut reasoning = reasoning;
+        reasoning.parts[0].include_next = true;
+        drop(db);
+        let db = Database::open(path.clone()).unwrap();
+        assert_eq!(
+            get_message(&db, &reply.id).unwrap().unwrap().reasoning,
+            Some(reasoning.clone())
+        );
         assert!(edit_message(&db, &reply.id, "edited")
             .unwrap()
             .reasoning
@@ -315,6 +356,16 @@ mod tests {
         assert_eq!(
             branch_to(&db, Some(&reply.id), &chat.id).unwrap()[1].reasoning,
             Some(reasoning)
+        );
+        set_reasoning_part_included(&db, &reply.id, "summary-0", false).unwrap();
+        assert!(
+            !get_message(&db, &reply.id)
+                .unwrap()
+                .unwrap()
+                .reasoning
+                .unwrap()
+                .parts[0]
+                .include_next
         );
         drop(db);
         std::fs::remove_file(path).unwrap();

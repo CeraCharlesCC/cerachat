@@ -6,7 +6,7 @@ import { ChatMessage } from './ChatMessage'
 import { MarkdownContent } from './MarkdownContent'
 import { IconButton } from '../ui/IconButton'
 
-export function ChatThread({ messages, onSelectSibling, path, streamingText, streamingReasoning, copiedMessageId, editingMessageId, actionsDisabled, regenerateDisabled, messagesEndRef, onScroll, onJumpToLatest, onIncludedChange, onCopy, onEdit, onCancelEdit, onSaveEdit, onRegenerate, onDelete }: {
+export function ChatThread({ messages, onSelectSibling, path, streamingText, streamingReasoning, copiedMessageId, editingMessageId, actionsDisabled, regenerateDisabled, messagesEndRef, onScroll, onJumpToLatest, onIncludedChange, onReasoningIncludedChange, onCopy, onEdit, onCancelEdit, onSaveEdit, onRegenerate, onDelete }: {
   messages: Message[]
   onSelectSibling: (message: Message) => void
   path: Message[]
@@ -20,6 +20,7 @@ export function ChatThread({ messages, onSelectSibling, path, streamingText, str
   onScroll: UIEventHandler<HTMLElement>
   onJumpToLatest: () => void
   onIncludedChange: (message: Message, included: boolean) => void
+  onReasoningIncludedChange: (message: Message, partId: string, included: boolean) => void
   onEdit: (message: Message) => void
   onCancelEdit: () => void
   onSaveEdit: (content: string) => Promise<void>
@@ -71,6 +72,7 @@ export function ChatThread({ messages, onSelectSibling, path, streamingText, str
                 actionsDisabled={actionsDisabled || editingMessageId !== null}
                 regenerateDisabled={regenerateDisabled}
                 onIncludedChange={(included) => onIncludedChange(message, included)}
+                onReasoningIncludedChange={(partId, included) => onReasoningIncludedChange(message, partId, included)}
                 onCopy={() => onCopy(message)}
                 onEdit={() => onEdit(message)}
                 onCancelEdit={onCancelEdit}

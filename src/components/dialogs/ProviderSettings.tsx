@@ -5,6 +5,7 @@ import { makeUniqueModelId, validateModel, validateProvider } from '../../lib/ca
 import type { ModelProfile, ProviderCatalog, ProviderProfile } from '../../types'
 import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
+import { ModelParameters } from './ModelParameters'
 
 const fieldClass = 'field'
 const labelClass = 'field-label'
@@ -16,12 +17,12 @@ const newProvider = (): ProviderProfile => ({
   base_url: 'https://api.openai.com/v1',
   api_key_storage: 'plain_portable',
   system_text: '',
-  temperature: null,
-  raw_json_overrides: '{}',
   context_separator: '\n\n──────── USER INPUT ────────\n\n',
 })
 
 interface ModelDraft {
+  temperature: number | null
+  raw_json_overrides: string
   provider_id: string
   model_id: string
   name: string
@@ -34,7 +35,7 @@ function toModelDraft(model: ModelProfile): ModelDraft {
 }
 
 function blankModel(providerId: string): ModelDraft {
-  return { provider_id: providerId, model_id: '', name: '', context_window: '131072', max_output_tokens: '16384' }
+  return { provider_id: providerId, model_id: '', name: '', context_window: '131072', max_output_tokens: '16384', temperature: null, raw_json_overrides: '{}' }
 }
 
 function errorText(reason: unknown): string {
@@ -166,6 +167,8 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
         name: modelDraft.name,
         context_window: Number(modelDraft.context_window),
         max_output_tokens: Number(modelDraft.max_output_tokens),
+        temperature: modelDraft.temperature,
+        raw_json_overrides: modelDraft.raw_json_overrides,
       }
       validateModel(model)
       if (!modelPersisted && catalog.models.some((item) => item.provider_id === model.provider_id && item.model_id === model.model_id)) {
@@ -201,26 +204,6 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
   }
 
   const endpointName = providerDraft?.protocol === 'openai_responses' ? '/responses' : '/chat/completions'
-  let summarySetting = ''
-  try {
-    summarySetting = JSON.parse(providerDraft?.raw_json_overrides || '{}')?.reasoning?.summary ?? ''
-  } catch { /* The raw JSON editor reports validation errors when saved. */ }
-
-  const updateSummary = (summary: string) => {
-    if (!providerDraft) return
-    try {
-      const extra = JSON.parse(providerDraft.raw_json_overrides || '{}')
-      if (!extra || typeof extra !== 'object' || Array.isArray(extra)) throw new Error('Raw JSON overrides must be an object')
-      if (extra.reasoning != null && (typeof extra.reasoning !== 'object' || Array.isArray(extra.reasoning))) throw new Error('The reasoning override must be an object')
-      const reasoning = { ...extra.reasoning }
-      if (summary) reasoning.summary = summary
-      else delete reasoning.summary
-      if (Object.keys(reasoning).length) extra.reasoning = reasoning
-      else delete extra.reasoning
-      updateProvider('raw_json_overrides', JSON.stringify(extra, null, 2))
-      setError(null)
-    } catch (reason) { setError(errorText(reason)) }
-  }
 
   return (
     <Modal title="Provider settings" onClose={onClose} wide footer={
@@ -266,11 +249,8 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
                 <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>Base URL<input className={fieldClass} value={providerDraft.base_url} onChange={(event) => updateProvider('base_url', event.target.value)} placeholder="https://api.openai.com/v1" /><span className="font-normal leading-4 text-muted-foreground">Endpoint: {endpointName}</span></label>
                 <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>API key<input className={fieldClass} type="password" autoComplete="new-password" value={apiKey} disabled={clearApiKey} placeholder={providerPersisted ? 'Leave empty to keep the stored key' : 'Optional'} onChange={(event) => { setApiKey(event.target.value); setClearApiKey(false) }} /><span className="font-normal leading-4 text-muted-foreground">Stored keys are never shown here.</span></label>
                 {providerPersisted && <div className="col-span-2 flex items-center gap-3 max-sm:col-span-1"><Button size="sm" variant={clearApiKey ? 'destructive' : 'outline'} onClick={() => { setClearApiKey((current) => !current); setApiKey('') }}>{clearApiKey ? 'Key will be cleared' : 'Clear stored key'}</Button>{clearApiKey && <span className="text-xs text-destructive">Save provider to apply.</span>}</div>}
-                <label className={labelClass}>Temperature<input className={fieldClass} type="number" step="0.1" value={providerDraft.temperature ?? ''} onChange={(event) => updateProvider('temperature', event.target.value === '' ? null : Number(event.target.value))} placeholder="Provider default" /></label>
-                {providerDraft.protocol === 'openai_responses' && <label className={labelClass}>Reasoning summary<select aria-label="Reasoning summary" className={fieldClass} value={summarySetting} onChange={(event) => updateSummary(event.target.value)}><option value="">Provider default</option><option value="auto">Auto</option><option value="concise">Concise</option><option value="detailed">Detailed</option></select><span className="font-normal leading-4 text-muted-foreground">Choose Auto to request a summary from supported models. Availability depends on the provider and model.</span></label>}
                 <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>System text<textarea className={fieldClass} rows={4} value={providerDraft.system_text} onChange={(event) => updateProvider('system_text', event.target.value)} /></label>
                 <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>Context separator<textarea className={`${fieldClass} font-mono`} rows={3} value={providerDraft.context_separator} onChange={(event) => updateProvider('context_separator', event.target.value)} /></label>
-                <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>Raw JSON overrides<textarea className={`${fieldClass} font-mono`} rows={5} value={providerDraft.raw_json_overrides} onChange={(event) => updateProvider('raw_json_overrides', event.target.value)} /></label>
               </fieldset>
               <div className="mt-4 flex justify-end"><Button variant="primary" onClick={() => void handleSaveProvider()} disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</Button></div>
 
@@ -294,6 +274,7 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
                           <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>Display name (optional)<input className={fieldClass} value={modelDraft.name} onChange={(event) => updateModel('name', event.target.value)} placeholder="Uses model ID when empty" /></label>
                           <label className={labelClass}>Context window<input className={fieldClass} type="number" min="1" max="4294967295" step="1" value={modelDraft.context_window} onChange={(event) => updateModel('context_window', event.target.value)} /></label>
                           <label className={labelClass}>Max output tokens<input className={fieldClass} type="number" min="1" max="4294967295" step="1" value={modelDraft.max_output_tokens} onChange={(event) => updateModel('max_output_tokens', event.target.value)} /></label>
+                          <ModelParameters key={`${modelDraft.provider_id}::${modelDraft.model_id}`} model={modelDraft} protocol={catalog.providers.find((provider) => provider.id === modelDraft.provider_id)?.protocol ?? providerDraft.protocol} onChange={(parameters) => setModelDraft((current) => current ? { ...current, ...parameters } : current)} />
                           <div className="col-span-2 flex justify-end gap-2 max-sm:col-span-1">{modelPersisted && <Button variant="destructive" onClick={() => void handleDeleteModel()} disabled={busy}><Trash2 size={14} />Delete model</Button>}<Button variant="primary" onClick={() => void handleSaveModel()} disabled={busy}>{busy ? 'Saving…' : 'Save model'}</Button></div>
                         </fieldset>
                       ) : (

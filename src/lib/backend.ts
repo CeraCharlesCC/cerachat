@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { demoBootstrap, demoMessages, demoSourceLines } from './demo'
 import { estimateTokens } from './utils'
+import { historyContent } from './reasoning'
 import { makeUniqueModelId, resolveProviderConfig, validateModel, validateProvider, validateProviderCatalog } from './catalog'
 import type {
   AddSliceArgs,
@@ -32,7 +33,7 @@ const browserListeners = new Set<(payload: StreamPayload) => void>()
 export const BROWSER_PROVIDER_STORAGE_KEY = 'cerachat.provider-catalog.v1'
 
 interface BrowserProviderEnvelope {
-  version: 1
+  version: 2
   settings: ProviderCatalog
   secrets: { api_keys: Record<string, string> }
 }
@@ -50,7 +51,7 @@ function exactKeys(value: Record<string, unknown>, expected: string[]): boolean 
 }
 
 function validateBrowserEnvelope(value: unknown): asserts value is BrowserProviderEnvelope {
-  if (!isRecord(value) || !exactKeys(value, ['version', 'settings', 'secrets']) || value.version !== 1) {
+  if (!isRecord(value) || !exactKeys(value, ['version', 'settings', 'secrets']) || value.version !== 2) {
     throw new Error('Browser provider settings use an unsupported or invalid schema')
   }
   validateProviderCatalog(value.settings)
@@ -66,9 +67,37 @@ function validateBrowserEnvelope(value: unknown): asserts value is BrowserProvid
   }
 }
 
+function upgradeBrowserEnvelope(value: unknown): unknown {
+  if (!isRecord(value) || value.version !== 1) return value
+  if (!isRecord(value.settings) || !exactKeys(value.settings, ['providers', 'models', 'selected_model_id'])
+    || !Array.isArray(value.settings.providers) || !Array.isArray(value.settings.models)) {
+    throw new Error('Legacy provider catalog has an invalid shape')
+  }
+  const parameters = new Map<string, { temperature: unknown; raw_json_overrides: unknown }>()
+  const providers = value.settings.providers.map((provider: unknown) => {
+    if (!isRecord(provider) || !exactKeys(provider, ['id', 'name', 'protocol', 'base_url', 'api_key_storage', 'system_text', 'temperature', 'raw_json_overrides', 'context_separator'])) {
+      throw new Error('Legacy provider has an invalid shape')
+    }
+    const { temperature, raw_json_overrides, ...profile } = provider
+    // Reuse current parameter validation even when this provider has no models.
+    validateModel({ provider_id: profile.id, model_id: 'validation', name: '', context_window: 1, max_output_tokens: 1, temperature, raw_json_overrides })
+    parameters.set(profile.id as string, { temperature, raw_json_overrides })
+    return profile
+  })
+  const models = value.settings.models.map((model: unknown) => {
+    if (!isRecord(model) || !exactKeys(model, ['provider_id', 'model_id', 'name', 'context_window', 'max_output_tokens'])) {
+      throw new Error('Legacy model has an invalid shape')
+    }
+    const inherited = parameters.get(model.provider_id as string)
+    if (!inherited) throw new Error('Legacy model references an unknown provider')
+    return { ...model, ...inherited }
+  })
+  return { ...value, version: 2, settings: { ...value.settings, providers, models } }
+}
+
 function readBrowserEnvelope(): BrowserProviderEnvelope {
   const stored = localStorage.getItem(BROWSER_PROVIDER_STORAGE_KEY)
-  if (stored === null) return { version: 1, settings: emptyCatalog(), secrets: { api_keys: {} } }
+  if (stored === null) return { version: 2, settings: emptyCatalog(), secrets: { api_keys: {} } }
   let value: unknown
   try {
     value = JSON.parse(stored)
@@ -76,6 +105,7 @@ function readBrowserEnvelope(): BrowserProviderEnvelope {
     throw new Error('Browser provider settings contain malformed JSON; clear them and configure the catalog again')
   }
   try {
+    value = upgradeBrowserEnvelope(value)
     validateBrowserEnvelope(value)
   } catch (reason) {
     throw new Error(`Browser provider settings are invalid: ${reason instanceof Error ? reason.message : String(reason)}. Clear this site's stored data and configure the catalog again.`)
@@ -144,6 +174,15 @@ export async function setMessageIncluded(messageId: string, included: boolean): 
     return
   }
   await call('set_message_included', { messageId, included })
+}
+
+export async function setReasoningPartIncluded(messageId: string, partId: string, included: boolean): Promise<void> {
+  if (isTauri()) return call('set_reasoning_part_included', { messageId, partId, included })
+  const message = browserMessages.find((item) => item.id === messageId && item.role === 'assistant')
+  const part = message?.reasoning?.parts.find((item) => item.id === partId)
+  if (!part) throw new Error('Reasoning block not found')
+  if (included && !part.text) throw new Error('Reasoning block has no visible text')
+  part.include_next = included
 }
 
 export async function deleteBranch(messageId: string): Promise<void> {
@@ -429,7 +468,7 @@ export async function compileRequest(args: CompileRequestArgs): Promise<RequestP
   if (!input) throw new Error('Request has no current user content')
   const messages = [
     ...(parts.before_history.length ? [{ role: 'user', content: join(parts.before_history) }] : []),
-    ...selected.map(({ role, content }) => ({ role, content })),
+    ...selected.map((message) => ({ role: message.role, content: historyContent(message) })),
     { role: 'user', content: input },
   ]
   const extra: unknown = JSON.parse(provider.raw_json_overrides || '{}')
@@ -439,10 +478,10 @@ export async function compileRequest(args: CompileRequestArgs): Promise<RequestP
   const temperature = provider.temperature === null ? {} : { temperature: provider.temperature }
   const request = provider.protocol === 'openai_responses'
     ? { ...extra, ...temperature, model: provider.model, ...(system ? { instructions: system } : {}), input: messages, stream: true, max_output_tokens: provider.max_output_tokens }
-    : { ...extra, ...temperature, model: provider.model, messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages], stream: true, max_tokens: provider.max_output_tokens }
+    : { ...extra, ...temperature, model: provider.model, messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages], stream: true, max_completion_tokens: provider.max_output_tokens }
   const requestJson = JSON.stringify(request, null, 2)
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(requestJson))
-  const historyTokens = selected.reduce((sum, message) => sum + estimateTokens(message.content), 0)
+  const historyTokens = selected.reduce((sum, message) => sum + estimateTokens(historyContent(message)), 0)
   let workspaceTokens = Object.values(parts).reduce((sum, values) => sum + estimateTokens(join(values)), 0)
   const separatorCount = Number(parts.before_current.some(Boolean) && Boolean(args.input))
     + Number(parts.inside_current.some(Boolean) && (parts.before_current.some(Boolean) || Boolean(args.input)))
@@ -474,13 +513,20 @@ const browserRequests = new Map<string, { cancel: () => void }>()
 
 function startBrowserStream(user: Message, text: string, emitUser: boolean): string {
   const requestId = crypto.randomUUID()
+  const reasoning = {
+    parts: [
+      { id: 'demo-summary', kind: 'summary' as const, text: 'Browser demo: inspect the selected context and preserve one Send per request.', include_next: false },
+      { id: 'demo-text', kind: 'text' as const, text: 'Browser demo: consider an explicit initialization step before applying the smallest change.', include_next: false },
+    ],
+    tokens: null, encrypted: false,
+  }
   let content = ''
   const finish = (cancelled: boolean) => {
     window.clearInterval(timer)
     browserRequests.delete(requestId)
     const assistant: Message | undefined = content ? {
       id: crypto.randomUUID(), conversation_id: user.conversation_id, parent_id: user.id,
-      role: 'assistant', content, include_next: true, created_at: Date.now(),
+      role: 'assistant', content, reasoning, include_next: true, created_at: Date.now(),
     } : undefined
     if (assistant) browserMessages.push(assistant)
     emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: cancelled ? 'cancelled' : 'done', assistant_message: assistant })
@@ -488,7 +534,7 @@ function startBrowserStream(user: Message, text: string, emitUser: boolean): str
   const timer = window.setInterval(() => {
     const delta = text.slice(content.length, content.length + 12)
     content += delta
-    emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: 'delta', text: delta })
+    emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: 'delta', text: delta, ...(content.length === delta.length ? { reasoning } : {}) })
     if (content.length === text.length) finish(false)
   }, 40)
   browserRequests.set(requestId, { cancel: () => finish(true) })

@@ -30,6 +30,8 @@ pub struct Reasoning {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReasoningPart {
+    #[serde(default)]
+    pub include_next: bool,
     pub id: String,
     pub kind: String,
     pub text: String,
@@ -79,13 +81,10 @@ pub struct ProviderProfile {
     pub base_url: String,
     pub api_key_storage: String,
     pub system_text: String,
-    #[serde(deserialize_with = "crate::portable::settings::deserialize_nullable")]
-    pub temperature: Option<f32>,
-    pub raw_json_overrides: String,
     pub context_separator: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
     pub provider_id: String,
@@ -93,6 +92,9 @@ pub struct ModelProfile {
     pub name: String,
     pub context_window: u32,
     pub max_output_tokens: u32,
+    #[serde(deserialize_with = "crate::portable::settings::deserialize_nullable")]
+    pub temperature: Option<f32>,
+    pub raw_json_overrides: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

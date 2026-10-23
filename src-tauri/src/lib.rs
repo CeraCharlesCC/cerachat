@@ -206,6 +206,17 @@ fn set_message_included(
 }
 
 #[tauri::command]
+fn set_reasoning_part_included(
+    state: State<'_, AppState>,
+    message_id: String,
+    part_id: String,
+    included: bool,
+) -> Result<(), String> {
+    db::chat::set_reasoning_part_included(&state.db, &message_id, &part_id, included)
+        .map_err(command_error)
+}
+
+#[tauri::command]
 fn delete_branch(state: State<'_, AppState>, message_id: String) -> Result<(), String> {
     db::chat::delete_branch(&state.db, &message_id).map_err(command_error)
 }
@@ -460,6 +471,7 @@ pub fn run() {
             create_conversation,
             delete_conversation,
             set_message_included,
+            set_reasoning_part_included,
             delete_branch,
             edit_message,
             add_text_source,

@@ -37,10 +37,11 @@ import {
   selectModel,
   sendMessage,
   setMessageIncluded,
+  setReasoningPartIncluded,
   subscribeStream,
   updateContextSlice,
 } from './lib/backend'
-import { mergeReasoning } from './lib/reasoning'
+import { historyContent, mergeReasoning } from './lib/reasoning'
 import { estimateTokens, formatTokens } from './lib/utils'
 import type {
   BootstrapState,
@@ -238,7 +239,7 @@ export default function App() {
       const index = path.findIndex((message) => message.id === sinceMessageId)
       selected = index < 0 ? [] : path.slice(index)
     }
-    return selected.filter((message) => message.include_next).reduce((sum, message) => sum + estimateTokens(message.content), 0)
+    return selected.filter((message) => message.include_next).reduce((sum, message) => sum + estimateTokens(historyContent(message)), 0)
   }, [path, historyMode, sinceMessageId])
   const input = conversationId ? drafts[conversationId] ?? "" : ""
   const sendParentId = activeLeafId
@@ -522,8 +523,18 @@ export default function App() {
             if (!editingMessage) textareaRef.current?.focus({ preventScroll: true })
           }}
           onIncludedChange={(message, included) => {
+            setPreview(null)
             setMessages((current) => current.map((item) => item.id === message.id ? { ...item, include_next: included } : item))
             void setMessageIncluded(message.id, included).catch((reason) => setError(String(reason)))
+          }}
+          onReasoningIncludedChange={(message, partId, included) => {
+            setBusy(true)
+            setPreview(null)
+            void setReasoningPartIncluded(message.id, partId, included).then(() => {
+              setMessages((current) => current.map((item) => item.id === message.id && item.reasoning ? {
+                ...item, reasoning: { ...item.reasoning, parts: item.reasoning.parts.map((part) => part.id === partId ? { ...part, include_next: included } : part) },
+              } : item))
+            }).catch((reason) => setError(String(reason))).finally(() => setBusy(false))
           }}
           onEdit={(message) => {
             stickToBottomRef.current = false

@@ -107,6 +107,7 @@ pub fn openai_delta(data: &str) -> AppResult<StreamDelta> {
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(position as u64);
                 result.reasoning.parts.push(crate::models::ReasoningPart {
+                    include_next: false,
                     id: format!("chat-{kind}-{index}"),
                     kind: kind.into(),
                     text: text.into(),
@@ -126,6 +127,7 @@ pub fn openai_delta(data: &str) -> AppResult<StreamDelta> {
             .filter(|s| !s.is_empty())
         {
             result.reasoning.parts.push(crate::models::ReasoningPart {
+                include_next: false,
                 id: "chat-reasoning".into(),
                 kind: "text".into(),
                 text: text.into(),
@@ -169,6 +171,7 @@ impl ResponsesDecoder {
         };
         if !addition.is_empty() {
             result.reasoning.parts.push(crate::models::ReasoningPart {
+                include_next: false,
                 id,
                 kind: kind.into(),
                 text: addition.into(),
