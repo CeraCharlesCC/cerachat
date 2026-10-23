@@ -24,7 +24,7 @@ export function ContextItem({ slice, index, count, disabled, dragHandle, onInspe
       : `Chars ${slice.start_pos}–${slice.end_pos}`
 
   return (
-    <div className={`rounded-xl border border-border/60 p-2.5 ${slice.enabled ? 'bg-card' : 'bg-muted/40'}`}>
+    <div className={`rounded-xl border border-border/60 p-3 ${slice.enabled ? 'bg-card' : 'bg-muted/40'}`}>
       <div className="flex items-start gap-1.5">
         {dragHandle}
         <input
@@ -36,7 +36,7 @@ export function ContextItem({ slice, index, count, disabled, dragHandle, onInspe
           onChange={(event) => onChange({ enabled: event.target.checked })}
         />
         <div className="min-w-0 flex-1">
-          <button className="block w-full truncate text-left text-xs font-medium hover:underline" title="View source and select lines" onClick={onInspect}>{slice.source_name}</button>
+          <button className="block w-full truncate text-left text-[13px] font-medium hover:underline" title="View source and select lines" onClick={onInspect}>{slice.source_name}</button>
           <span className="mt-0.5 block truncate tabular-nums text-[11px] text-muted-foreground">{range} · ~{formatTokens(slice.estimated_tokens)}</span>
         </div>
         <IconButton className="size-7" variant="destructive" aria-label="Remove context slice" title="Remove slice" disabled={disabled} onClick={onDelete}>
@@ -44,9 +44,9 @@ export function ContextItem({ slice, index, count, disabled, dragHandle, onInspe
         </IconButton>
       </div>
 
-      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-1.5">
+      <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
         <select
-          className="col-span-2 h-8 min-w-0 rounded-md border border-border/70 bg-background px-1.5 text-[11px] hover:bg-accent"
+          className="col-span-2 h-8 min-w-0 rounded-md border border-border/70 bg-background px-2 text-xs hover:bg-accent"
           disabled={disabled}
           value={slice.wrapper}
           aria-label="Context wrapper"
@@ -56,7 +56,7 @@ export function ContextItem({ slice, index, count, disabled, dragHandle, onInspe
           <option value="labeled">Labeled</option>
         </select>
         <select
-          className="h-7 min-w-0 rounded-md border border-border/70 bg-background px-1.5 text-[11px] hover:bg-accent"
+          className="h-8 min-w-0 rounded-md border border-border/70 bg-background px-2 text-xs hover:bg-accent"
           disabled={disabled}
           value={slice.insert_at}
           aria-label="Context insertion point"

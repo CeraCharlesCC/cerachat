@@ -20,8 +20,8 @@ export function ChatThread({ messages, onSelectSibling, path, streamingText, cop
   onDelete: (message: Message) => void
 }) {
   return (
-    <section onScroll={onScroll} className="scroll-stable min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 pt-4">
-      <div className="mx-auto flex min-h-full w-full max-w-[44rem] flex-col">
+    <section aria-label="Conversation messages" onScroll={onScroll} className="scroll-stable min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 pt-7 sm:px-6">
+      <div className="mx-auto flex min-h-full w-full max-w-[52rem] flex-col">
         {path.length === 0 && (
           <div className="my-auto flex flex-col items-center px-4 py-12 text-center">
             <div className="mb-5 grid size-11 place-items-center rounded-2xl border border-border/70 text-lg font-semibold">C</div>
@@ -30,7 +30,7 @@ export function ChatThread({ messages, onSelectSibling, path, streamingText, cop
           </div>
         )}
 
-        <div className="mb-6 flex flex-col gap-6 empty:hidden">
+        <div className="mb-8 flex flex-col gap-8 empty:hidden">
           {path.map((message) => (
             <ChatMessage
               key={message.id}

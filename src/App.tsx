@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Settings, X } from 'lucide-react'
+import { PanelLeft, PanelRight, Settings, X } from 'lucide-react'
 import { ChatThread } from './components/chat/ChatThread'
 import { Composer } from './components/chat/Composer'
 import { ContextSidebar } from './components/context/ContextSidebar'
@@ -13,6 +13,8 @@ import { ProviderModelSelector } from './components/model/ProviderModelSelector'
 import { ThreadSidebar } from './components/navigation/ThreadSidebar'
 import { Button } from './components/ui/Button'
 import { IconButton } from './components/ui/IconButton'
+import { ResizeHandle } from './components/ui/ResizeHandle'
+import { fitSidebars, usePanelSize, useViewportSize } from './lib/panelLayout'
 import {
   addContextSlice,
   addTextSource,
@@ -98,6 +100,16 @@ export default function App() {
   const [compactLayout, setCompactLayout] = useState(() => typeof window !== 'undefined' && window.matchMedia(compactLayoutQuery).matches)
   const [threadsOpen, setThreadsOpen] = useState(() => typeof window === 'undefined' || !window.matchMedia(compactLayoutQuery).matches)
   const [contextOpen, setContextOpen] = useState(() => typeof window === 'undefined' || !window.matchMedia(compactLayoutQuery).matches)
+  const viewport = useViewportSize()
+  const [preferredThreadsWidth, setThreadsWidth] = usePanelSize('threads', 220)
+  const [preferredContextWidth, setContextWidth] = usePanelSize('context', 320)
+  const [preferredComposerHeight, setComposerHeight] = usePanelSize('composer', 224)
+  const sidebarSpace = viewport.width - 440 - (threadsOpen ? 6 : 0) - (contextOpen ? 6 : 0)
+  const widths = fitSidebars(sidebarSpace, threadsOpen ? Math.min(400, Math.max(200, preferredThreadsWidth)) : 0, contextOpen ? Math.min(560, Math.max(300, preferredContextWidth)) : 0)
+  const threadsMax = Math.min(400, sidebarSpace - widths.context)
+  const contextMax = Math.min(560, sidebarSpace - widths.threads)
+  const composerMax = Math.max(200, Math.min(viewport.height * 0.6, viewport.height - 300))
+  const composerHeight = Math.min(composerMax, Math.max(200, preferredComposerHeight))
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
@@ -380,7 +392,7 @@ export default function App() {
   return (
     <div onDragOver={(event) => {
       if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'none' }
-    }} onDrop={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} className="grid h-dvh overflow-hidden bg-background text-foreground grid-cols-[220px_minmax(0,1fr)_360px] max-[1180px]:grid-cols-[190px_minmax(0,1fr)_330px] max-[1100px]:grid-cols-1">
+    }} onDrop={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} className="grid h-dvh overflow-hidden bg-background text-foreground" style={{ gridTemplateColumns: compactLayout ? 'minmax(0, 1fr)' : `${threadsOpen ? `${widths.threads}px 6px ` : ''}minmax(0, 1fr)${contextOpen ? ` 6px ${widths.context}px` : ''}` }}>
       {compactLayout && (threadsOpen || contextOpen) && (
         <button className="fixed inset-0 z-30 border-0 bg-black/35" aria-label="Close side panel" onClick={() => { setThreadsOpen(false); setContextOpen(false) }} />
       )}
@@ -401,10 +413,13 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      <main className="flex min-h-0 min-w-0 flex-col bg-background">
+      {!compactLayout && threadsOpen && <ResizeHandle label="Resize threads panel" controls="threads-panel" value={widths.threads} min={200} max={threadsMax} onChange={setThreadsWidth} onReset={() => setThreadsWidth(220)} />}
+
+      <main className="chat-main flex min-h-0 min-w-0 flex-col bg-background">
         <header className="relative z-20 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md">
           <div className="flex min-w-0 items-center gap-2.5">
             {compactLayout && <Button variant="outline" size="sm" aria-expanded={threadsOpen} aria-controls="threads-panel" onClick={toggleThreads}>Threads</Button>}
+            {!compactLayout && <IconButton aria-label="Toggle threads panel" aria-expanded={threadsOpen} aria-controls="threads-panel" title="Toggle threads panel" onClick={toggleThreads}><PanelLeft size={18} /></IconButton>}
             <ProviderModelSelector
               catalog={state.provider_catalog}
               disabled={busy || catalogBusy || Boolean(streaming)}
@@ -423,6 +438,7 @@ export default function App() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {compactLayout && <Button variant="outline" size="sm" aria-expanded={contextOpen} aria-controls="context-panel" onClick={toggleContext}>Context</Button>}
+            {!compactLayout && <IconButton aria-label="Toggle context panel" aria-expanded={contextOpen} aria-controls="context-panel" title="Toggle context panel" onClick={toggleContext}><PanelRight size={18} /></IconButton>}
             <IconButton aria-label="Provider settings" title="Provider settings" onClick={() => setSettingsOpen(true)}><Settings size={16} /></IconButton>
             <div className="flex w-28 flex-col items-end overflow-hidden px-1 py-1.5 tabular-nums max-sm:hidden">
               <span className="text-[11px] font-semibold">{formatTokens(historyTokens + workspaceTokens + estimateTokens(input))} input</span>
@@ -474,7 +490,9 @@ export default function App() {
           onRegenerate={(message) => void handleRegenerate(message)}
           onDelete={(message) => { if (confirm('Delete this message and all descendants?')) void deleteBranch(message.id).then(async () => { if (conversationId) await loadConversation(conversationId); await refreshBootstrap() }).catch((reason) => setError(String(reason))) }}
         />
+        <ResizeHandle label="Resize message composer" controls="message-composer" orientation="horizontal" direction={-1} value={composerHeight} min={200} max={composerMax} onChange={setComposerHeight} onReset={() => setComposerHeight(224)} />
         <Composer
+          height={composerHeight}
           textareaRef={textareaRef}
           input={input}
           historyMode={historyMode}
@@ -492,6 +510,8 @@ export default function App() {
           onSend={() => void handleSend()}
         />
       </main>
+
+      {!compactLayout && contextOpen && <ResizeHandle label="Resize context panel" controls="context-panel" direction={-1} value={widths.context} min={300} max={contextMax} onChange={setContextWidth} onReset={() => setContextWidth(320)} />}
 
       <ContextSidebar
         open={contextOpen}

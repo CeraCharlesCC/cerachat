@@ -20,7 +20,7 @@ export function BranchTree({ messages, activeLeafId, onSelect, disabled }: { dis
         <button
           key={message.id}
           disabled={disabled}
-          className={`flex h-8 w-full items-center rounded-md pr-2 text-left text-xs transition-colors hover:bg-muted focus-visible:bg-muted ${message.id === activeLeafId ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
+          className={`flex h-9 w-full items-center rounded-md pr-2 text-left text-xs transition-colors hover:bg-muted focus-visible:bg-muted ${message.id === activeLeafId ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
           style={{ paddingLeft: `${10 + Math.min(depth, 8) * 12}px` }}
           aria-current={message.id === activeLeafId ? 'true' : undefined}
           title={message.content}

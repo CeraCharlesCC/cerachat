@@ -40,7 +40,7 @@ export function ThreadSidebar({
   return (
     <aside
       id="threads-panel"
-      className={`panel flex min-h-0 min-w-0 flex-col border-r border-border/60 max-[1100px]:fixed max-[1100px]:inset-y-0 max-[1100px]:left-0 max-[1100px]:z-40 max-[1100px]:w-[min(360px,88vw)] max-[1100px]:shadow-[var(--shadow)] max-[1100px]:transition-transform ${open ? 'max-[1100px]:translate-x-0' : 'max-[1100px]:invisible max-[1100px]:-translate-x-[105%]'}`}
+      className={`panel flex min-h-0 min-w-0 flex-col max-[1100px]:fixed max-[1100px]:inset-y-0 max-[1100px]:left-0 max-[1100px]:z-40 max-[1100px]:w-[min(360px,88vw)] max-[1100px]:shadow-[var(--shadow)] max-[1100px]:transition-transform ${open ? 'max-[1100px]:translate-x-0' : 'min-[1101px]:hidden max-[1100px]:invisible max-[1100px]:-translate-x-[105%]'}`}
     >
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-border/60 px-3.5">
         <div className="min-w-0">
@@ -51,18 +51,18 @@ export function ThreadSidebar({
         </IconButton>
       </header>
 
-      <div className="px-2 pt-2">
+      <div className="px-3 pt-4">
         <Button variant="outline" className="w-full justify-start" disabled={disabled} onClick={onNewChat}>
           <Plus size={16} /> New chat
         </Button>
       </div>
 
-      <div className="px-3 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">Conversations</div>
-      <div className="max-h-[34vh] scroll-stable overflow-y-auto px-2 pb-2">
+      <div className="px-4 pb-2 pt-5 text-xs font-medium text-muted-foreground">Conversations</div>
+      <div className="max-h-[34vh] shrink-0 scroll-stable overflow-y-auto px-3 pb-4">
         {conversations.map((conversation) => (
           <div
             key={conversation.id}
-            className={`group/thread flex h-9 items-center rounded-lg transition-colors hover:bg-muted ${conversation.id === conversationId ? 'bg-muted' : ''}`}
+            className={`group/thread flex h-10 items-center rounded-lg transition-colors hover:bg-muted ${conversation.id === conversationId ? 'bg-muted' : ''}`}
           >
             <button
               className="min-w-0 flex-1 truncate px-2.5 text-left text-sm"
@@ -87,7 +87,7 @@ export function ThreadSidebar({
         ))}
       </div>
 
-      <div className="mt-1 border-t border-border/60 px-3 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">Branches</div>
+      <div className="border-t border-border/60 px-4 pb-2 pt-4 text-xs font-medium text-muted-foreground">Branches</div>
       <BranchTree disabled={disabled} messages={messages} activeLeafId={activeLeafId} onSelect={onSelectLeaf} />
 
       <footer className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2 text-xs text-muted-foreground">

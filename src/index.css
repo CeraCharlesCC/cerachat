@@ -91,13 +91,42 @@
   .field:focus { border-color: var(--ring); }
   .field-label { display: flex; min-width: 0; flex-direction: column; gap: 0.5rem; font-size: 0.75rem; font-weight: 500; }
   .message-actions { opacity: 1; }
+  .chat-main { container-type: inline-size; }
+  .resize-handle {
+    position: relative;
+    z-index: 10;
+    flex-shrink: 0;
+    touch-action: none;
+    user-select: none;
+    outline-offset: -2px;
+  }
+  .resize-handle::after {
+    content: '';
+    position: absolute;
+    border-radius: 999px;
+    background: var(--muted-foreground);
+    opacity: 0.3;
+    transition: opacity 120ms, background 120ms;
+  }
+  .resize-handle--vertical { width: 6px; cursor: col-resize; background: var(--panel); }
+  .resize-handle--vertical::after { width: 2px; height: 32px; top: calc(50% - 16px); left: 2px; }
+  .resize-handle--horizontal { height: 10px; cursor: row-resize; }
+  .resize-handle--horizontal::after { height: 2px; width: 40px; left: calc(50% - 20px); top: 4px; }
+  .resize-handle:hover, .resize-handle:focus-visible, .resize-handle.is-resizing { background: var(--accent); }
+  .resize-handle:hover::after, .resize-handle:focus-visible::after, .resize-handle.is-resizing::after { opacity: 1; background: var(--foreground); }
+  .resize-handle.is-resizing::before { content: ''; position: fixed; inset: 0; cursor: inherit; }
 
 }
 
 .markdown {
-  font-size: 0.875rem;
-  line-height: 1.7;
+  font-size: 0.9375rem;
+  line-height: 1.8;
   overflow-wrap: anywhere;
+}
+
+@container (max-width: 540px) {
+  #message-composer { padding-inline: 1rem; }
+  #message-composer [aria-label="Estimated tokens"] { font-size: 10px; }
 }
 
 .markdown > :first-child { margin-top: 0; }
