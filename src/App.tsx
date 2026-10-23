@@ -21,6 +21,7 @@ import {
   editMessage,
   reorderContextSlices,
   bootstrap,
+  cancelRequest,
   compileRequest,
   createConversation,
   deleteBranch,
@@ -99,6 +100,7 @@ export default function App() {
   const [streaming, setStreaming] = useState<{ requestId: string; text: string; reasoning: Reasoning | null } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [catalogBusy, setCatalogBusy] = useState(false)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [compactLayout, setCompactLayout] = useState(() => typeof window !== 'undefined' && window.matchMedia(compactLayoutQuery).matches)
@@ -201,9 +203,13 @@ export default function App() {
         setStreaming({ requestId: payload.request_id, text: '', reasoning: null })
       } else if (payload.kind === 'delta') {
         setStreaming((current) => current && current.requestId === payload.request_id ? { ...current, text: current.text + (payload.text ?? ''), reasoning: mergeReasoning(current.reasoning, payload.reasoning) } : current)
-      } else if (payload.kind === 'done' && payload.assistant_message) {
-        setMessages((current) => [...current.filter((message) => message.id !== payload.assistant_message?.id), payload.assistant_message as Message])
-        setActiveLeafId(payload.assistant_message.id)
+      } else if (payload.kind === 'done' || payload.kind === 'cancelled') {
+        if (payload.assistant_message) {
+          setMessages((current) => [...current.filter((message) => message.id !== payload.assistant_message?.id), payload.assistant_message as Message])
+          setActiveLeafId(payload.assistant_message.id)
+        } else if (restoreLeafOnErrorRef.current) {
+          setActiveLeafId(restoreLeafOnErrorRef.current)
+        }
         restoreLeafOnErrorRef.current = null
         setStreaming(null)
         void refreshBootstrap().catch((reason) => setError(String(reason)))
@@ -286,6 +292,18 @@ export default function App() {
     if (!conversationId || !canCompile) return
     setError(null)
     try { setPreview(await compileRequest(requestArgs())) } catch (reason) { await handleRequestError(reason) }
+  }
+
+  const handleStop = async () => {
+    if (!streaming || stopping) return
+    setStopping(true)
+    try {
+      await cancelRequest(streaming.requestId)
+    } catch (reason) {
+      setError(String(reason))
+    } finally {
+      setStopping(false)
+    }
   }
 
   const handleRegenerate = async (assistant: Message) => {
@@ -542,12 +560,14 @@ export default function App() {
           canCompile={canCompile}
           busy={busy}
           streaming={Boolean(streaming)}
+          stopping={stopping}
           editing={Boolean(editingMessage)}
           onInputChange={(value) => { if (conversationId) setDrafts((current) => ({ ...current, [conversationId]: value })) }}
           onHistoryModeChange={setHistoryMode}
           onSinceMessageChange={setSinceMessageId}
           onPreview={() => void handlePreview()}
           onSend={() => void handleSend()}
+          onStop={() => void handleStop()}
         />
       </main>
 

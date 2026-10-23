@@ -470,12 +470,42 @@ function emitBrowser(payload: StreamPayload) {
   for (const listener of browserListeners) listener(payload)
 }
 
+const browserRequests = new Map<string, { cancel: () => void }>()
+
+function startBrowserStream(user: Message, text: string, emitUser: boolean): string {
+  const requestId = crypto.randomUUID()
+  let content = ''
+  const finish = (cancelled: boolean) => {
+    window.clearInterval(timer)
+    browserRequests.delete(requestId)
+    const assistant: Message | undefined = content ? {
+      id: crypto.randomUUID(), conversation_id: user.conversation_id, parent_id: user.id,
+      role: 'assistant', content, include_next: true, created_at: Date.now(),
+    } : undefined
+    if (assistant) browserMessages.push(assistant)
+    emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: cancelled ? 'cancelled' : 'done', assistant_message: assistant })
+  }
+  const timer = window.setInterval(() => {
+    const delta = text.slice(content.length, content.length + 12)
+    content += delta
+    emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: 'delta', text: delta })
+    if (content.length === text.length) finish(false)
+  }, 40)
+  browserRequests.set(requestId, { cancel: () => finish(true) })
+  emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: 'started', user_message: emitUser ? user : undefined })
+  return requestId
+}
+
+export async function cancelRequest(requestId: string): Promise<void> {
+  if (isTauri()) return call<void>('cancel_request', { requestId })
+  browserRequests.get(requestId)?.cancel()
+}
+
 export async function sendMessage(args: CompileRequestArgs): Promise<string> {
   if (isTauri()) return call<string>('send_message', { args })
 
   await compileRequest(args)
 
-  const requestId = crypto.randomUUID()
   const now = Date.now()
   const user: Message = {
     id: crypto.randomUUID(),
@@ -487,23 +517,8 @@ export async function sendMessage(args: CompileRequestArgs): Promise<string> {
     created_at: now,
   }
   browserMessages.push(user)
-  emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'started', user_message: user })
   const text = 'Browser preview simulates streaming locally. The desktop build sends the inspected JSON exactly once to the configured OpenAI-compatible endpoint.'
-  queueMicrotask(() => emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'delta', text }))
-  queueMicrotask(() => {
-    const assistant: Message = {
-      id: crypto.randomUUID(),
-      conversation_id: args.conversationId,
-      parent_id: user.id,
-      role: 'assistant',
-      content: text,
-      include_next: true,
-      created_at: now + 1,
-    }
-    browserMessages.push(assistant)
-    emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'done', assistant_message: assistant })
-  })
-  return requestId
+  return startBrowserStream(user, text, true)
 }
 
 export async function regenerateResponse(args: RegenerateArgs): Promise<string> {
@@ -518,23 +533,6 @@ export async function regenerateResponse(args: RegenerateArgs): Promise<string> 
 
   await compileRequest({ conversationId: args.conversationId, parentId: user.parent_id, input: user.content, historyMode: args.historyMode, sinceMessageId: args.sinceMessageId })
 
-  const requestId = crypto.randomUUID()
-  const now = Date.now()
-  emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'started' })
   const text = 'This is a locally simulated regenerated response. The desktop build reuses the selected user message, sends one new provider request, and stores the result as a sibling branch.'
-  queueMicrotask(() => emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'delta', text }))
-  queueMicrotask(() => {
-    const assistant: Message = {
-      id: crypto.randomUUID(),
-      conversation_id: args.conversationId,
-      parent_id: user.id,
-      role: 'assistant',
-      content: text,
-      include_next: true,
-      created_at: now,
-    }
-    browserMessages.push(assistant)
-    emitBrowser({ request_id: requestId, conversation_id: args.conversationId, kind: 'done', assistant_message: assistant })
-  })
-  return requestId
+  return startBrowserStream(user, text, false)
 }

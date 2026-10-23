@@ -20,7 +20,7 @@ export interface SourceLines { source_id: string; start_line: number; total_line
 export interface RequestBreakdown { system_tokens: number; history_tokens: number; workspace_tokens: number; input_tokens: number; estimated_input_tokens: number; configured_context: number; max_output_tokens: number }
 export interface RequestPreview { request_json: string; compiled_prompt: string; request_sha256: string; breakdown: RequestBreakdown }
 export interface BootstrapState { conversations: Conversation[]; provider_catalog: ProviderCatalog; sources: WorkspaceSource[]; slices: ContextSlice[]; data_dir?: string }
-export interface StreamPayload { request_id: string; conversation_id: string; kind: 'started' | 'delta' | 'done' | 'error'; text?: string; reasoning?: Reasoning | null; error?: string; assistant_message?: Message; user_message?: Message }
+export interface StreamPayload { request_id: string; conversation_id: string; kind: 'started' | 'delta' | 'done' | 'cancelled' | 'error'; text?: string; reasoning?: Reasoning | null; error?: string; assistant_message?: Message; user_message?: Message }
 export interface CompileRequestArgs { conversationId: string; parentId: string | null; input: string; historyMode: HistoryMode; sinceMessageId?: string | null }
 export interface RegenerateArgs { conversationId: string; userMessageId: string; historyMode: HistoryMode; sinceMessageId?: string | null }
 export interface AddSliceArgs { sourceId: string; rangeType: 'all' | 'lines' | 'chars'; startPos?: number | null; endPos?: number | null; wrapper: WrapperMode; insertAt: InsertAt }

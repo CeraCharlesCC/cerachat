@@ -1,11 +1,11 @@
-import { ArrowUp, LoaderCircle } from 'lucide-react'
+import { ArrowUp, LoaderCircle, Square } from 'lucide-react'
 import { type KeyboardEvent, type RefObject } from 'react'
 import type { HistoryMode, Message } from '../../types'
 import { estimateTokens, formatTokens } from '../../lib/utils'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 
-export function Composer({ height, textareaRef, input, historyMode, sinceMessageId, path, historyTokens, workspaceTokens, canCompile, busy, streaming, editing, onInputChange, onHistoryModeChange, onSinceMessageChange, onPreview, onSend }: {
+export function Composer({ height, textareaRef, input, historyMode, sinceMessageId, path, historyTokens, workspaceTokens, canCompile, busy, streaming, stopping, editing, onInputChange, onHistoryModeChange, onSinceMessageChange, onPreview, onSend, onStop }: {
   height: number
   textareaRef: RefObject<HTMLTextAreaElement>
   input: string
@@ -17,12 +17,14 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
   canCompile: boolean
   busy: boolean
   streaming: boolean
+  stopping: boolean
   editing: boolean
   onInputChange: (value: string) => void
   onHistoryModeChange: (mode: HistoryMode) => void
   onSinceMessageChange: (messageId: string | null) => void
   onPreview: () => void
   onSend: () => void
+  onStop: () => void
 }) {
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
@@ -67,8 +69,20 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
             <span className="min-w-0 truncate px-3 pb-2 text-xs tabular-nums text-muted-foreground" title={editing ? 'Finish editing the message above. Your unsent draft is kept here.' : `${input.length.toLocaleString()} characters`}>{editing ? 'Editing message · draft kept' : `${input.length.toLocaleString()} chars`}</span>
             <div className="flex items-center gap-1.5">
               <Button variant="ghost" size="sm" disabled={!canCompile} onClick={onPreview}>Preview</Button>
-              <IconButton type="submit" variant="primary" className="size-8" disabled={busy || !canCompile} aria-label="Send message" title="Send message (Enter)">
-                {streaming || busy ? <LoaderCircle className="animate-spin" size={16} /> : <ArrowUp size={16} />}
+              <IconButton
+                type={streaming ? 'button' : 'submit'}
+                variant="primary"
+                className="size-8"
+                disabled={streaming ? stopping : busy || !canCompile}
+                aria-label={streaming ? 'Stop generating' : 'Send message'}
+                title={streaming ? (stopping ? 'Stopping…' : 'Stop generating') : 'Send message (Enter)'}
+                onClick={streaming ? (event) => {
+                  // Cancellation can switch this button back to submit during the click.
+                  event.preventDefault()
+                  onStop()
+                } : undefined}
+              >
+                {stopping || (busy && !streaming) ? <LoaderCircle className="animate-spin" size={16} /> : streaming ? <Square size={14} fill="currentColor" /> : <ArrowUp size={16} />}
               </IconButton>
             </div>
           </div>

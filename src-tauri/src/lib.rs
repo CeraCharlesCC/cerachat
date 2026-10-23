@@ -6,7 +6,12 @@ mod portable;
 mod providers;
 mod stream;
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
+use futures_util::future::AbortHandle;
 
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
@@ -17,6 +22,7 @@ use models::{AddSliceArgs, CompileRequestArgs, RegenerateArgs, StreamPayload, Up
 struct AppState {
     db: Arc<Database>,
     settings: Arc<portable::settings::SettingsStore>,
+    active_requests: Arc<Mutex<HashMap<String, AbortHandle>>>,
 }
 
 fn command_error(error: impl std::fmt::Display) -> String {
@@ -31,13 +37,14 @@ fn data_dir(db: &Database) -> &std::path::Path {
 
 fn start_provider_request(
     app: &AppHandle,
-    db: Arc<Database>,
+    state: &AppState,
     provider: models::ProviderConfig,
     compiled: models::CompiledRequest,
     conversation_id: String,
     user_message: models::Message,
     emit_user_message: bool,
 ) -> Result<String, String> {
+    let db = state.db.clone();
     let request_id = Uuid::new_v4().to_string();
     db::request::insert_request_log(
         &db,
@@ -47,6 +54,14 @@ fn start_provider_request(
         &compiled,
     )
     .map_err(command_error)?;
+
+    // Register before publishing started so the UI can cancel immediately.
+    let (abort_handle, abort_registration) = AbortHandle::new_pair();
+    let active_requests = state.active_requests.clone();
+    active_requests
+        .lock()
+        .expect("active requests mutex poisoned")
+        .insert(request_id.clone(), abort_handle);
 
     let _ = app.emit(
         "chat-stream",
@@ -66,84 +81,89 @@ fn start_provider_request(
     let request_id_for_task = request_id.clone();
     let request_json = compiled.request_json;
     tauri::async_runtime::spawn(async move {
-        let result = providers::openai_compatible::stream_once(&provider, request_json, |delta| {
-            let _ = app_handle.emit(
-                "chat-stream",
-                StreamPayload {
-                    request_id: request_id_for_task.clone(),
-                    conversation_id: conversation_id.clone(),
-                    kind: "delta".into(),
-                    text: delta.text.clone(),
-                    reasoning: (!delta.reasoning.is_empty()).then_some(delta.reasoning.clone()),
-                    error: None,
-                    assistant_message: None,
-                    user_message: None,
-                },
-            );
-            Ok(())
-        })
+        let result = providers::openai_compatible::stream_cancellable(
+            &provider,
+            request_json,
+            abort_registration,
+            |delta| {
+                let _ = app_handle.emit(
+                    "chat-stream",
+                    StreamPayload {
+                        request_id: request_id_for_task.clone(),
+                        conversation_id: conversation_id.clone(),
+                        kind: "delta".into(),
+                        text: delta.text.clone(),
+                        reasoning: (!delta.reasoning.is_empty()).then_some(delta.reasoning.clone()),
+                        error: None,
+                        assistant_message: None,
+                        user_message: None,
+                    },
+                );
+                Ok(())
+            },
+        )
         .await;
+        active_requests
+            .lock()
+            .expect("active requests mutex poisoned")
+            .remove(&request_id_for_task);
 
-        match result {
-            Ok(output) => match db::chat::insert_message_with_reasoning(
+        let cancelled = matches!(&result, Ok((_, true)));
+        let assistant = result.and_then(|(output, _)| {
+            if cancelled && output.content.is_empty() && output.reasoning.is_empty() {
+                return Ok(None);
+            }
+            db::chat::insert_message_with_reasoning(
                 &db,
                 &conversation_id,
                 Some(&user_message.id),
                 "assistant",
                 &output.content,
                 (!output.reasoning.is_empty()).then_some(output.reasoning),
-            ) {
-                Ok(assistant) => {
+            )
+            .map(Some)
+        });
+        let (kind, assistant_message, error) = match assistant {
+            Ok(assistant) => {
+                if let Some(assistant) = &assistant {
                     let _ = db::request::attach_assistant(&db, &request_id_for_task, &assistant.id);
-                    let _ = app_handle.emit(
-                        "chat-stream",
-                        StreamPayload {
-                            request_id: request_id_for_task,
-                            conversation_id,
-                            kind: "done".into(),
-                            text: None,
-                            reasoning: None,
-                            error: None,
-                            assistant_message: Some(assistant),
-                            user_message: None,
-                        },
-                    );
                 }
-                Err(error) => {
-                    let _ = app_handle.emit(
-                        "chat-stream",
-                        StreamPayload {
-                            request_id: request_id_for_task,
-                            conversation_id,
-                            kind: "error".into(),
-                            text: None,
-                            reasoning: None,
-                            error: Some(error.to_string()),
-                            assistant_message: None,
-                            user_message: None,
-                        },
-                    );
-                }
-            },
-            Err(error) => {
-                let _ = app_handle.emit(
-                    "chat-stream",
-                    StreamPayload {
-                        request_id: request_id_for_task,
-                        conversation_id,
-                        kind: "error".into(),
-                        text: None,
-                        reasoning: None,
-                        error: Some(error.to_string()),
-                        assistant_message: None,
-                        user_message: None,
-                    },
-                );
+                (
+                    if cancelled { "cancelled" } else { "done" },
+                    assistant,
+                    None,
+                )
             }
-        }
+            Err(error) => ("error", None, Some(error.to_string())),
+        };
+        let _ = app_handle.emit(
+            "chat-stream",
+            StreamPayload {
+                request_id: request_id_for_task,
+                conversation_id,
+                kind: kind.into(),
+                text: None,
+                reasoning: None,
+                error,
+                assistant_message,
+                user_message: None,
+            },
+        );
     });
 
     Ok(request_id)
+}
+
+#[tauri::command]
+fn cancel_request(state: State<'_, AppState>, request_id: String) {
+    if let Some(handle) = state
+        .active_requests
+        .lock()
+        .expect("active requests mutex poisoned")
+        .get(&request_id)
+    {
+        handle.abort();
+    }
 }
 
 #[tauri::command]
@@ -376,7 +396,7 @@ async fn send_message(
     .map_err(command_error)?;
     start_provider_request(
         &app,
-        state.db.clone(),
+        &state,
         provider,
         compiled,
         args.conversation_id,
@@ -414,7 +434,7 @@ async fn regenerate_response(
 
     start_provider_request(
         &app,
-        state.db.clone(),
+        &state,
         provider,
         compiled,
         args.conversation_id,
@@ -432,6 +452,7 @@ pub fn run() {
         .manage(AppState {
             db: Arc::new(db),
             settings: Arc::new(settings),
+            active_requests: Arc::default(),
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
@@ -457,6 +478,7 @@ pub fn run() {
             select_model,
             compile_request,
             send_message,
+            cancel_request,
             regenerate_response,
         ])
         .run(tauri::generate_context!())

@@ -1,15 +1,19 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { Message } from '../src/types'
 
-async function browserMessages(page: Page): Promise<Message[]> {
-  return page.evaluate(async () => {
+async function browserBackendUrl(page: Page): Promise<string> {
+  return page.evaluate(() => {
     // A reused Vite server may serve the app's backend with an HMR timestamp.
     // Import that same module instance so the assertions read the app's state.
     const url = performance.getEntriesByType('resource').map((entry) => entry.name)
       .find((name) => new URL(name).pathname === '/src/lib/backend.ts')
     if (!url) throw new Error('The browser backend has not loaded')
-    return (await import(url)).getMessages('demo-chat')
+    return url
   })
+}
+
+async function browserMessages(page: Page, url?: string): Promise<Message[]> {
+  return page.evaluate(async (url) => (await import(url)).getMessages('demo-chat'), url ?? await browserBackendUrl(page))
 }
 
 async function openWithModel(page: Page) {
@@ -37,6 +41,66 @@ async function clearAttachments(page: Page) {
     await expect(remove).toHaveCount(count - 1)
   }
 }
+
+test('stopping generation keeps the partial answer and draft, and allows another send', async ({ page }) => {
+  await openWithModel(page)
+  const url = await browserBackendUrl(page)
+  await page.clock.install()
+  await page.clock.pauseAt(new Date())
+  const input = page.getByRole('textbox', { name: 'Message input', exact: true })
+  const send = page.getByRole('button', { name: 'Send message', exact: true })
+  const stop = page.getByRole('button', { name: 'Stop generating', exact: true })
+  await input.fill('Please start streaming')
+  await send.click()
+  await expect(stop).toBeEnabled()
+  await page.clock.runFor(80)
+  await input.fill('My next question')
+  await input.press('Enter')
+  await expect(stop).toBeEnabled()
+  await stop.click()
+  await expect(stop).toHaveCount(0)
+  await expect(input).toHaveValue('My next question')
+  const saved = await browserMessages(page, url)
+  const partial = saved.at(-1)!
+  expect(partial.role).toBe('assistant')
+  expect(partial.content).toBe('Browser preview simulate')
+  await page.clock.runFor(2000)
+  expect(await browserMessages(page, url)).toEqual(saved)
+  await expect(send).toBeEnabled()
+  await send.click()
+  await expect(stop).toBeEnabled()
+  await page.clock.runFor(2000)
+  await expect(stop).toHaveCount(0)
+  expect((await browserMessages(page, url)).slice(-2).map((message) => message.role)).toEqual(['user', 'assistant'])
+  await expect(page.getByRole('alert')).toHaveCount(0)
+})
+
+test('stopping before the first token avoids an empty answer and restores a regenerated branch', async ({ page }) => {
+  await openWithModel(page)
+  const url = await browserBackendUrl(page)
+  await page.clock.install()
+  await page.clock.pauseAt(new Date())
+  const before = await browserMessages(page, url)
+  const input = page.getByRole('textbox', { name: 'Message input', exact: true })
+  const stop = page.getByRole('button', { name: 'Stop generating', exact: true })
+  const last = page.getByRole('main').locator('article').last()
+  const previousAnswer = await last.textContent()
+  await last.getByRole('button', { name: 'Regenerate response', exact: true }).click()
+  await expect(stop).toBeEnabled()
+  await stop.click()
+  await expect(stop).toHaveCount(0)
+  expect(await browserMessages(page, url)).toEqual(before)
+  await expect(last).toHaveText(previousAnswer!)
+  await input.fill('Stop before receiving anything')
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  await expect(stop).toBeEnabled()
+  await stop.click()
+  await expect(stop).toHaveCount(0)
+  const after = await browserMessages(page, url)
+  expect(after).toHaveLength(before.length + 1)
+  expect(after.at(-1)?.role).toBe('user')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+})
 
 async function pasteText(page: Page, name: string, text: string) {
   await page.getByRole('button', { name: 'Paste text', exact: true }).click()
@@ -85,6 +149,7 @@ test('editing a user inline creates a sibling, preserves descendants, and genera
   await page.getByRole('button', { name: 'Next branch', exact: true }).first().click()
   await expect(page.getByRole('main').locator('article')).toHaveCount(1)
   await page.getByRole('button', { name: 'Generate response', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
   await expect(page.getByRole('main').locator('article')).toHaveCount(2)
   const generated = await browserMessages(page)
   expect(generated).toHaveLength(before.length + 2)
