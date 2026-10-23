@@ -83,12 +83,41 @@ CREATE TABLE IF NOT EXISTS request_context (
         conn.execute_batch("ALTER TABLE workspace_sources ADD COLUMN conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE;")?;
     }
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_workspace_sources_conversation ON workspace_sources(conversation_id);")?;
+    let has_reasoning = {
+        let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+        let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        columns
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "reasoning_json")
+    };
+    if !has_reasoning {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN reasoning_json TEXT;")?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_preserves_existing_messages_without_inventing_reasoning() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, parent_id TEXT, role TEXT NOT NULL, content TEXT NOT NULL, include_next INTEGER NOT NULL, created_at INTEGER NOT NULL);
+            INSERT INTO messages VALUES('old', 'chat', NULL, 'assistant', 'legacy answer', 1, 1);").unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let (content, reasoning): (String, Option<String>) = conn
+            .query_row(
+                "SELECT content,reasoning_json FROM messages WHERE id='old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "legacy answer");
+        assert_eq!(reasoning, None);
+    }
 
     #[test]
     fn migration_preserves_legacy_library_and_adds_chat_ownership_once() {

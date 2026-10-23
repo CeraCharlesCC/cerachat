@@ -171,7 +171,7 @@ export async function editMessage(messageId: string, content: string): Promise<M
   if (!original) throw new Error('Message not found')
   if (!content.trim()) throw new Error('Message content cannot be empty')
   if (original.content === content) return structuredClone(original)
-  const edited = { ...original, id: crypto.randomUUID(), content, created_at: Date.now() }
+  const edited = { ...original, id: crypto.randomUUID(), content, reasoning: null, created_at: Date.now() }
   browserMessages.push(edited)
   return structuredClone(edited)
 }

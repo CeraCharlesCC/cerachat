@@ -1239,18 +1239,34 @@ mod tests {
                 let body: Value =
                     serde_json::from_slice(&bytes[body_start..body_start + content_length])
                         .unwrap();
-                let response = format!("data: {delta}\n\ndata: [DONE]\n\n");
+                let response = if protocol == "openai_responses" {
+                    format!("data: {{\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs\",\"summary_index\":0,\"delta\":\"thinking 日本語\"}}\n\ndata: {delta}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"usage\":{{\"output_tokens_details\":{{\"reasoning_tokens\":42}}}}}}}}\n\n")
+                } else {
+                    format!("data: {{\"choices\":[{{\"delta\":{{\"reasoning_content\":\"thinking 日本語\"}}}}]}}\n\ndata: {delta}\n\ndata: {{\"choices\":[],\"usage\":{{\"completion_tokens_details\":{{\"reasoning_tokens\":42}}}}}}\n\ndata: [DONE]\n\n")
+                };
                 write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
                 (listener, headers, body)
             });
+            let mut streamed_reasoning = crate::models::Reasoning::default();
+            let mut streamed_text = String::new();
             let output = runtime
                 .block_on(openai_compatible::stream_once(
                     &resolved,
                     compiled.request_json.clone(),
-                    |_| Ok(()),
+                    |delta| {
+                        streamed_reasoning.merge(&delta.reasoning);
+                        if let Some(text) = &delta.text {
+                            streamed_text.push_str(text);
+                        }
+                        Ok(())
+                    },
                 ))
                 .unwrap();
-            assert_eq!(output, "hello");
+            assert_eq!(output.content, "hello");
+            assert_eq!(streamed_text, output.content);
+            assert_eq!(streamed_reasoning, output.reasoning);
+            assert_eq!(output.reasoning.parts[0].text, "thinking 日本語");
+            assert_eq!(output.reasoning.tokens, Some(42));
             let (listener, headers, body) = server.join().unwrap();
             assert!(headers.starts_with(&format!("POST {endpoint} HTTP/1.1\r\n")));
             assert!(headers

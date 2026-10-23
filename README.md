@@ -19,6 +19,10 @@ Each chat has its own Source library and attachment list, shared across all of t
 
 Sources from older versions' shared library remain available under **Previous shared library** in the same picker. They are preserved without being automatically included in any chat; add the sources you want to each chat explicitly. Past request snapshots are unchanged.
 
+Provider reasoning appears in a collapsible panel above the answer and is saved with the response. Summaries are labeled separately from provider reasoning text; the latter may itself be summarized by the provider. Reported reasoning token counts are shown when available. Protected reasoning cannot be displayed. Reasoning is not added to subsequent chat history, and editing an answer clears its reasoning on the new branch.
+
+For supported [OpenAI Responses models](https://developers.openai.com/api/docs/guides/reasoning), select **Reasoning summary → Auto** in provider settings and save. Other providers may need their own **Raw JSON overrides**: [OpenRouter](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) supports `{"reasoning":{"enabled":true,"exclude":false}}`; [Gemini's OpenAI endpoint](https://ai.google.dev/gemini-api/docs/openai) supports `{"extra_body":{"google":{"thinking_config":{"include_thoughts":true}}}}`. For Chat Completions endpoints that support usage streaming, `{"stream_options":{"include_usage":true}}` requests token usage. Merge these with existing overrides as appropriate; provider and model support varies. Configuration and preview remain local operations.
+
 ## Development
 
 Use Node.js 22 and Rust via rustup (the Rust toolchain is pinned in `rust-toolchain.toml`). For desktop development:

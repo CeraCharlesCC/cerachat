@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::db::{now_ms, Database};
 use crate::error::{AppError, AppResult};
-use crate::models::{Conversation, Message};
+use crate::models::{Conversation, Message, Reasoning};
 
 fn row_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
     Ok(Conversation {
@@ -23,6 +23,18 @@ fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         content: row.get(4)?,
         include_next: row.get::<_, i64>(5)? != 0,
         created_at: row.get(6)?,
+        reasoning: row
+            .get::<_, Option<String>>(7)?
+            .map(|json| {
+                serde_json::from_str(&json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .transpose()?,
     })
 }
 
@@ -71,7 +83,7 @@ pub fn ensure_conversation(db: &Database) -> AppResult<Conversation> {
 pub fn get_messages(db: &Database, conversation_id: &str) -> AppResult<Vec<Message>> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json
              FROM messages WHERE conversation_id=?1 ORDER BY created_at ASC, id ASC",
         )?;
         let messages = stmt
@@ -84,7 +96,7 @@ pub fn get_messages(db: &Database, conversation_id: &str) -> AppResult<Vec<Messa
 pub fn get_message(db: &Database, id: &str) -> AppResult<Option<Message>> {
     db.with_conn(|conn| {
         Ok(conn.query_row(
-            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at FROM messages WHERE id=?1",
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json FROM messages WHERE id=?1",
             [id],
             row_message,
         ).optional()?)
@@ -97,6 +109,17 @@ pub fn insert_message(
     parent_id: Option<&str>,
     role: &str,
     content: &str,
+) -> AppResult<Message> {
+    insert_message_with_reasoning(db, conversation_id, parent_id, role, content, None)
+}
+
+pub fn insert_message_with_reasoning(
+    db: &Database,
+    conversation_id: &str,
+    parent_id: Option<&str>,
+    role: &str,
+    content: &str,
+    reasoning: Option<Reasoning>,
 ) -> AppResult<Message> {
     if !matches!(role, "user" | "assistant") {
         return Err(AppError::Message("invalid message role".into()));
@@ -118,6 +141,7 @@ pub fn insert_message(
         parent_id: parent_id.map(str::to_string),
         role: role.to_string(),
         content: content.to_string(),
+        reasoning,
         include_next: true,
         created_at: now,
     };
@@ -125,8 +149,8 @@ pub fn insert_message(
     db.with_conn_mut(|conn| {
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO messages(id,conversation_id,parent_id,role,content,include_next,created_at) VALUES(?1,?2,?3,?4,?5,1,?6)",
-            params![message.id, message.conversation_id, message.parent_id, message.role, message.content, message.created_at],
+            "INSERT INTO messages(id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json) VALUES(?1,?2,?3,?4,?5,1,?6,?7)",
+            params![message.id, message.conversation_id, message.parent_id, message.role, message.content, message.created_at, message.reasoning.as_ref().map(serde_json::to_string).transpose()?],
         )?;
         tx.execute(
             "UPDATE conversations SET updated_at=?2 WHERE id=?1",
@@ -169,14 +193,14 @@ pub fn edit_message(db: &Database, message_id: &str, content: &str) -> AppResult
     db.with_conn_mut(|conn| {
         let tx = conn.transaction()?;
         let original = tx.query_row(
-            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at FROM messages WHERE id=?1",
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json FROM messages WHERE id=?1",
             [message_id], row_message,
         ).optional()?.ok_or_else(|| AppError::Message("message not found".into()))?;
         if original.content == content {
             return Ok(original);
         }
         let edited = Message {
-            id: Uuid::new_v4().to_string(), content: content.to_string(),
+            id: Uuid::new_v4().to_string(), content: content.to_string(), reasoning: None,
             created_at: now_ms(), ..original
         };
         tx.execute(
@@ -243,6 +267,58 @@ pub fn branch_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reasoning_survives_reopening_but_is_cleared_on_edited_branches() {
+        let path =
+            std::env::temp_dir().join(format!("cerachat-reasoning-{}.sqlite3", Uuid::new_v4()));
+        let db = Database::open(path.clone()).unwrap();
+        let chat = create_conversation(&db).unwrap();
+        let user = insert_message(&db, &chat.id, None, "user", "question").unwrap();
+        let reasoning = Reasoning {
+            parts: vec![crate::models::ReasoningPart {
+                id: "summary-0".into(),
+                kind: "summary".into(),
+                text: "Saved summary 日本語".into(),
+            }],
+            tokens: Some(42),
+            encrypted: true,
+        };
+        let reply = insert_message_with_reasoning(
+            &db,
+            &chat.id,
+            Some(&user.id),
+            "assistant",
+            "answer",
+            Some(reasoning.clone()),
+        )
+        .unwrap();
+        drop(db);
+        let db = Database::open(path.clone()).unwrap();
+        assert_eq!(
+            get_message(&db, &reply.id).unwrap().unwrap().reasoning,
+            Some(reasoning.clone())
+        );
+        assert!(get_message(&db, &user.id)
+            .unwrap()
+            .unwrap()
+            .reasoning
+            .is_none());
+        assert_eq!(
+            edit_message(&db, &reply.id, "answer").unwrap().reasoning,
+            Some(reasoning.clone())
+        );
+        assert!(edit_message(&db, &reply.id, "edited")
+            .unwrap()
+            .reasoning
+            .is_none());
+        assert_eq!(
+            branch_to(&db, Some(&reply.id), &chat.id).unwrap()[1].reasoning,
+            Some(reasoning)
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn edits_preserve_original_subtree_and_inclusion_without_sending() {

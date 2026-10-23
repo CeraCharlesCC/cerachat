@@ -3,6 +3,7 @@ import { IconButton } from '../ui/IconButton'
 import type { Message } from '../../types'
 import { MarkdownContent } from './MarkdownContent'
 import { MessageActions } from './MessageActions'
+import { ReasoningContent } from './ReasoningContent'
 
 export function ChatMessage({ message, copied, actionsDisabled, regenerateDisabled, siblings, onSelectSibling, onIncludedChange, onCopy, onEdit, onRegenerate, onDelete }: {
   siblings: Message[]
@@ -25,6 +26,7 @@ export function ChatMessage({ message, copied, actionsDisabled, regenerateDisabl
       <div className={isUser
         ? 'max-w-[85%] min-w-0 rounded-2xl bg-muted px-4 py-2.5 text-foreground md:max-w-[75%]'
         : 'w-full px-2 text-foreground'}>
+        {!isUser && <ReasoningContent reasoning={message.reasoning} />}
         <MarkdownContent content={message.content} />
       </div>
       <div className={`flex flex-wrap items-center gap-2 ${isUser ? 'mr-1 justify-end' : 'ml-1'}`}>

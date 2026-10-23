@@ -3,8 +3,8 @@ use reqwest::Client;
 
 use crate::{
     error::{AppError, AppResult},
-    models::ProviderConfig,
-    stream::sse::{openai_delta, responses_delta, SseParser},
+    models::{ProviderConfig, Reasoning},
+    stream::sse::{openai_delta, ResponsesDecoder, SseParser, StreamDelta},
 };
 
 fn api_root(base_url: &str) -> &str {
@@ -22,13 +22,28 @@ pub fn responses_endpoint(base_url: &str) -> String {
     format!("{}/responses", api_root(base_url))
 }
 
+#[derive(Default)]
+pub struct ProviderOutput {
+    pub content: String,
+    pub reasoning: Reasoning,
+}
+
+impl ProviderOutput {
+    fn merge(&mut self, delta: &StreamDelta) {
+        if let Some(text) = &delta.text {
+            self.content.push_str(text);
+        }
+        self.reasoning.merge(&delta.reasoning);
+    }
+}
+
 pub async fn stream_once<F>(
     provider: &ProviderConfig,
     request_json: String,
     mut on_delta: F,
-) -> AppResult<String>
+) -> AppResult<ProviderOutput>
 where
-    F: FnMut(&str) -> AppResult<()>,
+    F: FnMut(&StreamDelta) -> AppResult<()>,
 {
     let client = Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -68,7 +83,8 @@ where
 
     let mut bytes = response.bytes_stream();
     let mut parser = SseParser::default();
-    let mut output = String::new();
+    let mut output = ProviderOutput::default();
+    let mut decoder = ResponsesDecoder::default();
     let mut saw_done = false;
     let mut saw_event = false;
 
@@ -80,13 +96,17 @@ where
                 break;
             }
             let delta = if is_responses {
-                responses_delta(&data)?
+                decoder.decode(&data)?
             } else {
                 openai_delta(&data)?
             };
-            if let Some(delta) = delta {
-                output.push_str(&delta);
+            output.merge(&delta);
+            if delta.text.is_some() || !delta.reasoning.is_empty() {
                 on_delta(&delta)?;
+            }
+            if delta.done {
+                saw_done = true;
+                break;
             }
         }
         if saw_done {
@@ -99,12 +119,12 @@ where
             saw_event = true;
             if data.trim() != "[DONE]" {
                 let delta = if is_responses {
-                    responses_delta(&data)?
+                    decoder.decode(&data)?
                 } else {
                     openai_delta(&data)?
                 };
-                if let Some(delta) = delta {
-                    output.push_str(&delta);
+                output.merge(&delta);
+                if delta.text.is_some() || !delta.reasoning.is_empty() {
                     on_delta(&delta)?;
                 }
             }

@@ -55,6 +55,7 @@ fn start_provider_request(
             conversation_id: conversation_id.clone(),
             kind: "started".into(),
             text: None,
+            reasoning: None,
             error: None,
             assistant_message: None,
             user_message: emit_user_message.then_some(user_message.clone()),
@@ -72,7 +73,8 @@ fn start_provider_request(
                     request_id: request_id_for_task.clone(),
                     conversation_id: conversation_id.clone(),
                     kind: "delta".into(),
-                    text: Some(delta.to_string()),
+                    text: delta.text.clone(),
+                    reasoning: (!delta.reasoning.is_empty()).then_some(delta.reasoning.clone()),
                     error: None,
                     assistant_message: None,
                     user_message: None,
@@ -83,12 +85,13 @@ fn start_provider_request(
         .await;
 
         match result {
-            Ok(output) => match db::chat::insert_message(
+            Ok(output) => match db::chat::insert_message_with_reasoning(
                 &db,
                 &conversation_id,
                 Some(&user_message.id),
                 "assistant",
-                &output,
+                &output.content,
+                (!output.reasoning.is_empty()).then_some(output.reasoning),
             ) {
                 Ok(assistant) => {
                     let _ = db::request::attach_assistant(&db, &request_id_for_task, &assistant.id);
@@ -99,6 +102,7 @@ fn start_provider_request(
                             conversation_id,
                             kind: "done".into(),
                             text: None,
+                            reasoning: None,
                             error: None,
                             assistant_message: Some(assistant),
                             user_message: None,
@@ -113,6 +117,7 @@ fn start_provider_request(
                             conversation_id,
                             kind: "error".into(),
                             text: None,
+                            reasoning: None,
                             error: Some(error.to_string()),
                             assistant_message: None,
                             user_message: None,
@@ -128,6 +133,7 @@ fn start_provider_request(
                         conversation_id,
                         kind: "error".into(),
                         text: None,
+                        reasoning: None,
                         error: Some(error.to_string()),
                         assistant_message: None,
                         user_message: None,

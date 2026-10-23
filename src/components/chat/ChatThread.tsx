@@ -1,13 +1,15 @@
 import type { RefObject, UIEventHandler } from 'react'
-import type { Message } from '../../types'
+import type { Message, Reasoning } from '../../types'
+import { ReasoningContent } from './ReasoningContent'
 import { ChatMessage } from './ChatMessage'
 import { MarkdownContent } from './MarkdownContent'
 
-export function ChatThread({ messages, onSelectSibling, path, streamingText, copiedMessageId, actionsDisabled, regenerateDisabled, messagesEndRef, onScroll, onIncludedChange, onCopy, onEdit, onRegenerate, onDelete }: {
+export function ChatThread({ messages, onSelectSibling, path, streamingText, streamingReasoning, copiedMessageId, actionsDisabled, regenerateDisabled, messagesEndRef, onScroll, onIncludedChange, onCopy, onEdit, onRegenerate, onDelete }: {
   messages: Message[]
   onSelectSibling: (message: Message) => void
   path: Message[]
   streamingText: string | null
+  streamingReasoning: Reasoning | null
   copiedMessageId: string | null
   actionsDisabled: boolean
   regenerateDisabled: boolean
@@ -49,6 +51,7 @@ export function ChatThread({ messages, onSelectSibling, path, streamingText, cop
           ))}
           {streamingText !== null && (
             <article className="flex w-full flex-col px-2 text-foreground" aria-live="polite">
+              <ReasoningContent reasoning={streamingReasoning} />
               <MarkdownContent content={streamingText || '…'} />
               <span className="flex h-8 items-center text-xs text-muted-foreground">Streaming</span>
             </article>

@@ -15,8 +15,42 @@ pub struct Message {
     pub parent_id: Option<String>,
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub reasoning: Option<Reasoning>,
     pub include_next: bool,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reasoning {
+    pub parts: Vec<ReasoningPart>,
+    pub tokens: Option<u64>,
+    pub encrypted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningPart {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+}
+
+impl Reasoning {
+    pub fn merge(&mut self, delta: &Self) {
+        for part in &delta.parts {
+            if let Some(existing) = self.parts.iter_mut().find(|p| p.id == part.id) {
+                existing.text.push_str(&part.text);
+            } else {
+                self.parts.push(part.clone());
+            }
+        }
+        self.tokens = delta.tokens.or(self.tokens);
+        self.encrypted |= delta.encrypted;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty() && self.tokens.is_none() && !self.encrypted
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +173,7 @@ pub struct StreamPayload {
     pub conversation_id: String,
     pub kind: String,
     pub text: Option<String>,
+    pub reasoning: Option<Reasoning>,
     pub error: Option<String>,
     pub assistant_message: Option<Message>,
     pub user_message: Option<Message>,

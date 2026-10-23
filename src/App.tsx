@@ -40,6 +40,7 @@ import {
   subscribeStream,
   updateContextSlice,
 } from './lib/backend'
+import { mergeReasoning } from './lib/reasoning'
 import { estimateTokens, formatTokens } from './lib/utils'
 import type {
   BootstrapState,
@@ -49,6 +50,7 @@ import type {
   Message,
   ProviderCatalog,
   RequestPreview,
+  Reasoning,
   StreamPayload,
   WorkspaceSource,
   WrapperMode,
@@ -95,7 +97,7 @@ export default function App() {
   const [attachmentPosition, setAttachmentPosition] = useState<InsertAt>('inside_current')
   const [autoInclude, setAutoInclude] = useState(true)
   const selectedLeavesRef = useRef(new Map<string, string>())
-  const [streaming, setStreaming] = useState<{ requestId: string; text: string } | null>(null)
+  const [streaming, setStreaming] = useState<{ requestId: string; text: string; reasoning: Reasoning | null } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [catalogBusy, setCatalogBusy] = useState(false)
@@ -197,9 +199,9 @@ export default function App() {
           setActiveLeafId(payload.user_message.id)
         }
         stickToBottomRef.current = true
-        setStreaming({ requestId: payload.request_id, text: '' })
+        setStreaming({ requestId: payload.request_id, text: '', reasoning: null })
       } else if (payload.kind === 'delta') {
-        setStreaming((current) => current && current.requestId === payload.request_id ? { ...current, text: current.text + (payload.text ?? '') } : current)
+        setStreaming((current) => current && current.requestId === payload.request_id ? { ...current, text: current.text + (payload.text ?? ''), reasoning: mergeReasoning(current.reasoning, payload.reasoning) } : current)
       } else if (payload.kind === 'done' && payload.assistant_message) {
         setMessages((current) => [...current.filter((message) => message.id !== payload.assistant_message?.id), payload.assistant_message as Message])
         setActiveLeafId(payload.assistant_message.id)
@@ -253,7 +255,7 @@ export default function App() {
 
   useEffect(() => {
     if (stickToBottomRef.current) messagesEndRef.current?.scrollIntoView({ block: "end" })
-  }, [activeLeafId, path.length, streaming?.text])
+  }, [activeLeafId, path.length, streaming?.text, streaming?.reasoning])
 
   const requestArgs = () => ({
     conversationId: conversationId as string,
@@ -485,6 +487,7 @@ export default function App() {
           }}
           path={path}
           streamingText={streaming?.text ?? null}
+          streamingReasoning={streaming?.reasoning ?? null}
           copiedMessageId={copiedMessageId}
           actionsDisabled={busy || Boolean(streaming)}
           regenerateDisabled={!hasActiveModel || catalogBusy}
