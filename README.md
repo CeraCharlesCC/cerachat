@@ -15,6 +15,10 @@ CeraChat is a local-first desktop chat client for deliberate, auditable use of O
 
 Configure a provider and its models, select a conversation branch and local context, inspect the request preview, then explicitly send. The browser preview (`npm run dev`) uses simulated responses; file import and real provider requests require the desktop app.
 
+Each chat has its own Source library and attachment list, shared across all of that chat's branches. Switching to another chat restores that chat's context; a new chat starts empty. Use **Add from another chat** to search by chat or source name and explicitly reuse a source. The added source has independent attachment settings and remains available if the original source or chat is deleted. Automatic inclusion follows **New attachment options**.
+
+Sources from older versions' shared library remain available under **Previous shared library** in the same picker. They are preserved without being automatically included in any chat; add the sources you want to each chat explicitly. Past request snapshots are unchanged.
+
 ## Development
 
 Use Node.js 22 and Rust via rustup (the Rust toolchain is pinned in `rust-toolchain.toml`). For desktop development:

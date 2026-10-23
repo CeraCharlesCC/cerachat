@@ -55,7 +55,7 @@ pub fn compile(
     args: &CompileRequestArgs,
 ) -> AppResult<CompiledRequest> {
     let history = select_history(db, args)?;
-    let workspace = compile_workspace(db, &provider.context_separator)?;
+    let workspace = compile_workspace(db, &args.conversation_id, &provider.context_separator)?;
 
     let mut system = provider.system_text.clone();
     append_part(&mut system, &workspace.system, &provider.context_separator);
@@ -195,11 +195,15 @@ fn select_history(
         .collect())
 }
 
-fn compile_workspace(db: &Database, separator: &str) -> AppResult<WorkspaceParts> {
+fn compile_workspace(
+    db: &Database,
+    conversation_id: &str,
+    separator: &str,
+) -> AppResult<WorkspaceParts> {
     let mut parts = WorkspaceParts::default();
     let mut seen_hashes = HashSet::new();
 
-    for slice in db_context::list_slices(db)?
+    for slice in db_context::conversation_slices(db, conversation_id)?
         .into_iter()
         .filter(|slice| slice.enabled)
     {
@@ -383,9 +387,33 @@ mod tests {
             raw_json_overrides: "{}".into(),
             context_separator: "\n---\n".into(),
         };
+        let other_chat = chat::create_conversation(&db).unwrap();
+        let foreign_source = db_context::add_source(
+            &db,
+            &other_chat.id,
+            "foreign.txt".into(),
+            "paste".into(),
+            None,
+            "FOREIGN",
+        )
+        .unwrap();
+        db_context::add_slice(
+            &db,
+            crate::models::AddSliceArgs {
+                source_id: foreign_source.id,
+                range_type: "all".into(),
+                start_pos: None,
+                end_pos: None,
+                wrapper: "raw".into(),
+                insert_at: "inside_current".into(),
+            },
+        )
+        .unwrap();
         let mut ids = Vec::new();
         for (name, text) in [("a.txt", "AAA"), ("b.txt", "BBB")] {
-            let source = db_context::add_source(&db, name.into(), name.into(), None, text).unwrap();
+            let source =
+                db_context::add_source(&db, &conversation.id, name.into(), name.into(), None, text)
+                    .unwrap();
             ids.push(
                 db_context::add_slice(
                     &db,
@@ -403,7 +431,7 @@ mod tests {
             );
         }
         let mut args = CompileRequestArgs {
-            conversation_id: conversation.id,
+            conversation_id: conversation.id.clone(),
             parent_id: None,
             input: "question".into(),
             history_mode: "full".into(),
@@ -416,7 +444,7 @@ mod tests {
             "question\n---\nAAA\n---\nBBB"
         );
         ids.reverse();
-        db_context::reorder_slices(&db, &ids).unwrap();
+        db_context::reorder_slices(&db, &conversation.id, &ids).unwrap();
         let after = compile(&db, &provider, &args).unwrap();
         let json: Value = serde_json::from_str(&after.request_json).unwrap();
         assert_eq!(
@@ -424,6 +452,17 @@ mod tests {
             "question\n---\nBBB\n---\nAAA"
         );
         assert_ne!(before.request_sha256, after.request_sha256);
+        let other = compile(
+            &db,
+            &provider,
+            &CompileRequestArgs {
+                conversation_id: other_chat.id,
+                ..args.clone()
+            },
+        )
+        .unwrap();
+        let json: Value = serde_json::from_str(&other.request_json).unwrap();
+        assert_eq!(json["messages"][1]["content"], "question\n---\nFOREIGN");
         args.input.clear();
         let standalone = compile(&db, &provider, &args).unwrap();
         let json: Value = serde_json::from_str(&standalone.request_json).unwrap();

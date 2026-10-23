@@ -1,4 +1,16 @@
 import { expect, test, type Page } from '@playwright/test'
+import type { Message } from '../src/types'
+
+async function browserMessages(page: Page): Promise<Message[]> {
+  return page.evaluate(async () => {
+    // A reused Vite server may serve the app's backend with an HMR timestamp.
+    // Import that same module instance so the assertions read the app's state.
+    const url = performance.getEntriesByType('resource').map((entry) => entry.name)
+      .find((name) => new URL(name).pathname === '/src/lib/backend.ts')
+    if (!url) throw new Error('The browser backend has not loaded')
+    return (await import(url)).getMessages('demo-chat')
+  })
+}
 
 async function openWithModel(page: Page) {
   await page.addInitScript(() => {
@@ -49,7 +61,7 @@ test('editing a user creates a sibling, preserves descendants, and generates wit
   await openWithModel(page)
   const external: string[] = []
   page.on('request', (request) => { if (!request.url().startsWith('http://127.0.0.1:4173/')) external.push(request.url()) })
-  const before = await page.evaluate(async () => (await import('/src/lib/backend.ts')).getMessages('demo-chat'))
+  const before = await browserMessages(page)
   await page.getByRole('button', { name: 'Edit message', exact: true }).first().click()
   const editor = page.getByRole('dialog', { name: 'Edit message' })
   const save = editor.getByRole('button', { name: 'Save as new branch' })
@@ -60,7 +72,7 @@ test('editing a user creates a sibling, preserves descendants, and generates wit
   await save.click()
   await expect(editor).toHaveCount(0)
   await expect(page.getByRole('main').locator('article')).toHaveCount(1)
-  const after = await page.evaluate(async () => (await import('/src/lib/backend.ts')).getMessages('demo-chat'))
+  const after = await browserMessages(page)
   expect(after).toHaveLength(before.length + 1)
   for (const message of before) expect(after.find((item) => item.id === message.id)).toEqual(message)
   const edited = after.find((message) => message.content === 'Edited prompt 日本語')!
@@ -72,7 +84,7 @@ test('editing a user creates a sibling, preserves descendants, and generates wit
   await expect(page.getByRole('main').locator('article')).toHaveCount(1)
   await page.getByRole('button', { name: 'Generate response', exact: true }).click()
   await expect(page.getByRole('main').locator('article')).toHaveCount(2)
-  const generated = await page.evaluate(async () => (await import('/src/lib/backend.ts')).getMessages('demo-chat'))
+  const generated = await browserMessages(page)
   expect(generated).toHaveLength(before.length + 2)
   expect(generated.filter((message) => message.content === edited.content)).toHaveLength(1)
   expect(generated.find((message) => message.parent_id === edited.id)?.role).toBe('assistant')
@@ -153,4 +165,77 @@ test('compact context supports paste and reorder without overflowing the viewpor
   const box = await page.locator('#context-panel').boundingBox()
   expect(box!.x).toBeGreaterThanOrEqual(0)
   expect(box!.x + box!.width).toBeLessThanOrEqual(390)
+})
+
+test('source libraries share all branches, isolate chats, and allow explicit reuse with independent removal', async ({ page }) => {
+  await openWithModel(page)
+  await clearAttachments(page)
+  await pasteText(page, 'private.txt', 'CHAT_A_ONLY')
+  const library = page.locator('#source-library')
+  const list = page.getByRole('list', { name: 'Ordered attachments' })
+  const threads = page.locator('#threads-panel')
+  await page.getByRole('button', { name: 'Previous branch', exact: true }).click()
+  await expect(library).toContainText('private.txt')
+  await expect(list.getByRole('listitem')).toHaveCount(1)
+  await page.getByLabel('Message input').fill('QUESTION')
+  expect(await previewCurrent(page)).toContain('CHAT_A_ONLY')
+
+  await threads.getByRole('button', { name: 'Large log review', exact: true }).click()
+  await expect(library).not.toContainText('private.txt')
+  await expect(list.getByRole('listitem')).toHaveCount(0)
+  await page.getByLabel('Message input').fill('QUESTION_B')
+  expect(await previewCurrent(page)).toBe('QUESTION_B')
+  // Include all remains scoped even though another chat has multiple sources.
+  await pasteText(page, 'b.txt', 'CHAT_B_ONLY')
+  await page.getByRole('button', { name: 'Include all sources', exact: true }).click()
+  await expect(list.getByRole('listitem')).toHaveCount(1)
+  expect(await previewCurrent(page)).toBe('QUESTION_B\n---\n===== FILE: b.txt =====\nCHAT_B_ONLY')
+
+  await page.getByRole('button', { name: 'Add from another chat', exact: true }).click()
+  let picker = page.getByRole('dialog', { name: 'Add from another chat' })
+  await picker.getByLabel('Search chats and sources').fill('private.txt')
+  await expect(picker.getByRole('button', { name: /^Add .* from / })).toHaveCount(1)
+  await picker.getByRole('button', { name: 'Add private.txt from Deterministic request architecture', exact: true }).click()
+  await expect(picker).toHaveCount(0)
+  await expect(library).toContainText('private.txt')
+  await expect(list.getByRole('listitem')).toHaveCount(2)
+  expect(await previewCurrent(page)).toContain('CHAT_A_ONLY')
+  await list.getByRole('listitem').last().getByRole('button', { name: 'Move context slice up', exact: true }).click()
+  await expect(list.getByRole('listitem').first()).toContainText('private.txt')
+
+  // Reusing the same source again does not duplicate it or its attachment.
+  await page.getByRole('button', { name: 'Add from another chat', exact: true }).click()
+  picker = page.getByRole('dialog', { name: 'Add from another chat' })
+  await picker.getByRole('button', { name: 'Add private.txt from Deterministic request architecture', exact: true }).click()
+  await expect(picker).toHaveCount(0)
+  await expect(library.getByRole('button', { name: 'Include all of private.txt', exact: true })).toHaveCount(1)
+  await expect(list.getByRole('listitem')).toHaveCount(2)
+
+  await threads.getByRole('button', { name: 'Deterministic request architecture', exact: true }).click()
+  await expect(list.getByRole('listitem')).toHaveCount(1)
+  await expect(library).not.toContainText('b.txt')
+  page.once('dialog', (dialog) => dialog.accept())
+  await library.getByRole('button', { name: 'Remove private.txt', exact: true }).click()
+  await expect(library).not.toContainText('private.txt')
+  await threads.getByRole('button', { name: 'Large log review', exact: true }).click()
+  await expect(list.getByRole('listitem')).toHaveCount(2)
+  expect(await previewCurrent(page)).toContain('CHAT_A_ONLY')
+  await threads.getByRole('button', { name: 'New chat', exact: true }).click()
+  await expect(library.getByRole('button')).toHaveCount(0)
+  await expect(list.getByRole('listitem')).toHaveCount(0)
+})
+
+test('cross-chat reuse respects automatic inclusion being off', async ({ page }) => {
+  await openWithModel(page)
+  await page.locator('#threads-panel').getByRole('button', { name: 'Large log review', exact: true }).click()
+  await page.getByText('New attachment options', { exact: true }).click()
+  await page.getByLabel('Include imported files automatically').uncheck()
+  await page.getByRole('button', { name: 'Add from another chat', exact: true }).click()
+  const picker = page.getByRole('dialog', { name: 'Add from another chat' })
+  await picker.getByRole('button', { name: 'Add instructions.txt from Deterministic request architecture', exact: true }).click()
+  await expect(picker).toHaveCount(0)
+  await expect(page.locator('#source-library')).toContainText('instructions.txt')
+  await expect(page.getByRole('list', { name: 'Ordered attachments' }).getByRole('listitem')).toHaveCount(0)
+  await page.getByLabel('Message input').fill('QUESTION')
+  expect(await previewCurrent(page)).toBe('QUESTION')
 })

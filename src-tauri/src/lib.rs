@@ -196,6 +196,7 @@ fn edit_message(
 #[tauri::command]
 fn add_text_source(
     state: State<'_, AppState>,
+    conversation_id: String,
     name: String,
     text: String,
 ) -> Result<models::WorkspaceSource, String> {
@@ -204,6 +205,7 @@ fn add_text_source(
     }
     db::context::add_source(
         &state.db,
+        &conversation_id,
         name.trim().into(),
         "pasted-text".into(),
         None,
@@ -215,17 +217,28 @@ fn add_text_source(
 #[tauri::command]
 fn reorder_context_slices(
     state: State<'_, AppState>,
+    conversation_id: String,
     slice_ids: Vec<String>,
 ) -> Result<(), String> {
-    db::context::reorder_slices(&state.db, &slice_ids).map_err(command_error)
+    db::context::reorder_slices(&state.db, &conversation_id, &slice_ids).map_err(command_error)
 }
 
 #[tauri::command]
 fn import_sources(
     state: State<'_, AppState>,
+    conversation_id: String,
     paths: Vec<String>,
 ) -> Result<Vec<models::WorkspaceSource>, String> {
-    context::import_paths(&state.db, &paths).map_err(command_error)
+    context::import_paths(&state.db, &conversation_id, &paths).map_err(command_error)
+}
+
+#[tauri::command]
+fn reference_source(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    source_id: String,
+) -> Result<models::WorkspaceSource, String> {
+    db::context::reference_source(&state.db, &conversation_id, &source_id).map_err(command_error)
 }
 
 #[tauri::command]
@@ -425,6 +438,7 @@ pub fn run() {
             add_text_source,
             reorder_context_slices,
             import_sources,
+            reference_source,
             remove_source,
             get_source_lines,
             add_context_slice,

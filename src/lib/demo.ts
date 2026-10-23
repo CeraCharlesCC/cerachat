@@ -2,9 +2,9 @@ import type { BootstrapState, ContextSlice, Message, SourceLines, WorkspaceSourc
 
 const now = Date.now()
 export const demoSources: WorkspaceSource[] = [
-  { id: 'source-1', display_name: 'instructions.txt', origin_path: '/demo/instructions.txt', archive_path: null, blob_hash: '2a54d0d', original_size: 38912, line_count: 284, created_at: now },
-  { id: 'source-2', display_name: 'source.zip / logs/debug.log', origin_path: '/demo/source.zip', archive_path: 'logs/debug.log', blob_hash: '8e17d10', original_size: 532480, line_count: 6402, created_at: now },
-  { id: 'source-3', display_name: 'notes.md', origin_path: '/demo/notes.md', archive_path: null, blob_hash: '4187b21', original_size: 19456, line_count: 176, created_at: now },
+  { conversation_id: 'demo-chat', id: 'source-1', display_name: 'instructions.txt', origin_path: '/demo/instructions.txt', archive_path: null, blob_hash: '2a54d0d', original_size: 38912, line_count: 284, created_at: now },
+  { conversation_id: 'demo-chat', id: 'source-2', display_name: 'source.zip / logs/debug.log', origin_path: '/demo/source.zip', archive_path: 'logs/debug.log', blob_hash: '8e17d10', original_size: 532480, line_count: 6402, created_at: now },
+  { conversation_id: 'demo-chat', id: 'source-3', display_name: 'notes.md', origin_path: '/demo/notes.md', archive_path: null, blob_hash: '4187b21', original_size: 19456, line_count: 176, created_at: now },
 ]
 
 export const demoSlices: ContextSlice[] = [

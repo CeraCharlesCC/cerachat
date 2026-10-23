@@ -7,7 +7,8 @@ edition = "2021"
 
 [lib]
 name = "cerachat_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop binaries only need rlib; staticlib/cdylib are for mobile builds.
+crate-type = ["rlib"]
 
 [features]
 # The Tauri CLI enables this for production builds. Direct cargo build callers

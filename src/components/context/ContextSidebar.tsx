@@ -22,6 +22,7 @@ type ContextSidebarProps = {
   onAutoIncludeChange: (enabled: boolean) => void
   onImport: () => void
   onPaste: () => void
+  onReference: () => void
   onAddAll: () => void
   onOpenSource: (source: WorkspaceSource) => void
   onAddSource: (source: WorkspaceSource) => void
@@ -32,7 +33,7 @@ type ContextSidebarProps = {
   onReorder: (draggedId: string, targetId: string) => void
 }
 
-export function ContextSidebar({ open, sources, slices, workspaceTokens, busy, wrapper, insertAt, autoInclude, onWrapperChange, onInsertAtChange, onAutoIncludeChange, onImport, onPaste, onAddAll, onOpenSource, onAddSource, onRemoveSource, onChangeSlice, onDeleteSlice, onMoveSlice, onReorder }: ContextSidebarProps) {
+export function ContextSidebar({ open, sources, slices, workspaceTokens, busy, wrapper, insertAt, autoInclude, onWrapperChange, onInsertAtChange, onAutoIncludeChange, onImport, onPaste, onReference, onAddAll, onOpenSource, onAddSource, onRemoveSource, onChangeSlice, onDeleteSlice, onMoveSlice, onReorder }: ContextSidebarProps) {
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [targetId, setTargetId] = useState<string | null>(null)
   const [preferredLibraryHeight, setLibraryHeight] = usePanelSize('source-library', 224)
@@ -50,6 +51,7 @@ export function ContextSidebar({ open, sources, slices, workspaceTokens, busy, w
           <Button variant="outline" size="sm" disabled={busy} onClick={onImport}><FolderPlus size={15} /> Add files</Button>
           <Button variant="outline" size="sm" disabled={busy} onClick={onPaste}><ClipboardPaste size={15} /> Paste text</Button>
         </div>
+        <Button variant="ghost" size="sm" className="w-full" disabled={busy} onClick={onReference}>Add from another chat</Button>
         <details>
           <summary className="cursor-pointer text-xs text-muted-foreground">New attachment options</summary>
           <div className="mt-2 grid grid-cols-2 gap-2">

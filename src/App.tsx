@@ -8,6 +8,7 @@ import { ProviderSettings } from './components/dialogs/ProviderSettings'
 import { RequestInspector } from './components/dialogs/RequestInspector'
 import { MessageEditor } from './components/dialogs/MessageEditor'
 import { TextSourceDialog } from './components/dialogs/TextSourceDialog'
+import { ReferenceSourceDialog } from './components/dialogs/ReferenceSourceDialog'
 import { SourceViewer } from './components/dialogs/SourceViewer'
 import { ProviderModelSelector } from './components/model/ProviderModelSelector'
 import { ThreadSidebar } from './components/navigation/ThreadSidebar'
@@ -31,6 +32,7 @@ import {
   importSources,
   isTauri,
   removeSource,
+  referenceSource,
   regenerateResponse,
   selectModel,
   sendMessage,
@@ -88,6 +90,7 @@ export default function App() {
   const [viewerSource, setViewerSource] = useState<WorkspaceSource | null>(null)
   const [editingMessage, setEditingMessage] = useState<Message | null>(null)
   const [pasteOpen, setPasteOpen] = useState(false)
+  const [referenceOpen, setReferenceOpen] = useState(false)
   const [attachmentWrapper, setAttachmentWrapper] = useState<WrapperMode>('labeled')
   const [attachmentPosition, setAttachmentPosition] = useState<InsertAt>('inside_current')
   const [autoInclude, setAutoInclude] = useState(true)
@@ -165,6 +168,11 @@ export default function App() {
   }, [conversationId, activeLeafId, messages])
 
   useEffect(() => {
+    setPreview(null)
+    setViewerSource(null)
+    setPasteOpen(false)
+    setReferenceOpen(false)
+    setEditingMessage(null)
     if (!conversationId) { setMessages([]); setActiveLeafId(null); return }
     let cancelled = false
     setMessages([])
@@ -211,7 +219,11 @@ export default function App() {
 
   const path = useMemo(() => messagePath(messages, activeLeafId), [messages, activeLeafId])
   const byId = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages])
-  const orderedSlices = useMemo(() => [...(state?.slices ?? [])].sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id)), [state?.slices])
+  const chatSources = useMemo(() => (state?.sources ?? []).filter((source) => conversationId !== null && source.conversation_id === conversationId), [state?.sources, conversationId])
+  const orderedSlices = useMemo(() => {
+    const ids = new Set(chatSources.map((source) => source.id))
+    return (state?.slices ?? []).filter((slice) => ids.has(slice.source_id)).sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))
+  }, [state?.slices, chatSources])
   const workspaceTokens = orderedSlices.filter((slice) => slice.enabled).reduce((sum, slice) => sum + slice.estimated_tokens, 0)
   const historyTokens = useMemo(() => {
     let selected = historyMode === 'no_history' ? [] : historyMode === 'last10' ? path.slice(-10) : path
@@ -338,7 +350,7 @@ export default function App() {
     if (from < 0 || to < 0 || from === to) return
     ids.splice(from, 1)
     ids.splice(to, 0, draggedId)
-    await mutateContext(() => reorderContextSlices(ids))
+    await mutateContext(() => reorderContextSlices(conversationId as string, ids))
   }
 
   const moveSlice = (slice: ContextSlice, direction: -1 | 1) => {
@@ -347,18 +359,18 @@ export default function App() {
   }
 
   const addAllSources = () => mutateContext(async () => {
-    for (const source of state?.sources ?? []) await includeSource(source)
+    for (const source of chatSources) await includeSource(source)
   })
 
   const handleImport = async () => {
-    if (busy || streaming) return
+    if (!conversationId || busy || streaming) return
     if (!isTauri()) { setError('File import is available in the desktop build. Use Paste text in browser preview.'); return }
     try {
       const chosen = await open({ multiple: true, directory: false, filters: [{ name: 'Text or ZIP', extensions: ['txt', 'md', 'json', 'log', 'csv', 'zip'] }] })
       if (!chosen) return
       const paths = Array.isArray(chosen) ? chosen : [chosen]
       await mutateContext(async () => {
-        const sources = await importSources(paths)
+        const sources = await importSources(conversationId, paths)
         if (autoInclude) for (const source of sources) await includeSource(source)
       })
     } catch (reason) { setError(String(reason)) }
@@ -515,10 +527,10 @@ export default function App() {
 
       <ContextSidebar
         open={contextOpen}
-        sources={state.sources}
+        sources={chatSources}
         slices={orderedSlices}
         workspaceTokens={workspaceTokens}
-        busy={busy || Boolean(streaming)}
+        busy={!conversationId || busy || Boolean(streaming)}
         wrapper={attachmentWrapper}
         insertAt={attachmentPosition}
         autoInclude={autoInclude}
@@ -526,6 +538,7 @@ export default function App() {
         onInsertAtChange={setAttachmentPosition}
         onAutoIncludeChange={setAutoInclude}
         onPaste={() => setPasteOpen(true)}
+        onReference={() => setReferenceOpen(true)}
         onReorder={(draggedId, targetId) => void reorderSlices(draggedId, targetId)}
         onImport={() => void handleImport()}
         onAddAll={() => void addAllSources()}
@@ -550,10 +563,25 @@ export default function App() {
           await refreshBootstrap()
         } finally { setBusy(false) }
       }} />}
-      {pasteOpen && <TextSourceDialog onClose={() => setPasteOpen(false)} onAdd={async (name, text) => {
+      {referenceOpen && conversationId && <ReferenceSourceDialog
+        sources={state.sources.filter((source) => source.conversation_id !== conversationId)}
+        conversations={state.conversations}
+        onClose={() => setReferenceOpen(false)}
+        onAdd={async (source) => {
+          setBusy(true)
+          try {
+            const referenced = await referenceSource(conversationId, source.id)
+            if (autoInclude) await includeSource(referenced)
+            await refreshBootstrap()
+            setPreview(null)
+            setReferenceOpen(false)
+          } finally { setBusy(false) }
+        }}
+      />}
+      {pasteOpen && conversationId && <TextSourceDialog onClose={() => setPasteOpen(false)} onAdd={async (name, text) => {
         setBusy(true)
         try {
-          const source = await addTextSource(name, text)
+          const source = await addTextSource(conversationId, name, text)
           if (autoInclude) await includeSource(source)
           await refreshBootstrap()
           setPreview(null)

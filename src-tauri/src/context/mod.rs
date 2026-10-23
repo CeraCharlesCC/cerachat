@@ -11,7 +11,11 @@ use crate::{
     models::WorkspaceSource,
 };
 
-pub fn import_paths(db: &Database, paths: &[String]) -> AppResult<Vec<WorkspaceSource>> {
+pub fn import_paths(
+    db: &Database,
+    conversation_id: &str,
+    paths: &[String],
+) -> AppResult<Vec<WorkspaceSource>> {
     let mut imported = Vec::new();
     for raw_path in paths {
         let path = Path::new(raw_path);
@@ -31,6 +35,7 @@ pub fn import_paths(db: &Database, paths: &[String]) -> AppResult<Vec<WorkspaceS
                 let display_name = format!("{archive_name} / {}", entry.archive_path);
                 imported.push(db_context::add_source(
                     db,
+                    conversation_id,
                     display_name,
                     path.to_string_lossy().to_string(),
                     Some(entry.archive_path),
@@ -51,6 +56,7 @@ pub fn import_paths(db: &Database, paths: &[String]) -> AppResult<Vec<WorkspaceS
             .to_string();
         imported.push(db_context::add_source(
             db,
+            conversation_id,
             display_name,
             path.to_string_lossy().to_string(),
             None,

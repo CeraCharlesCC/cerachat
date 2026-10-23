@@ -15,6 +15,7 @@ use super::{now_ms, Database};
 fn row_source(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceSource> {
     Ok(WorkspaceSource {
         id: row.get(0)?,
+        conversation_id: row.get(8)?,
         display_name: row.get(1)?,
         origin_path: row.get(2)?,
         archive_path: row.get(3)?,
@@ -27,6 +28,7 @@ fn row_source(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceSource> {
 
 pub fn add_source(
     db: &Database,
+    conversation_id: &str,
     display_name: String,
     origin_path: String,
     archive_path: Option<String>,
@@ -35,7 +37,8 @@ pub fn add_source(
     let bytes = text.as_bytes();
     let hash = hex::encode(Sha256::digest(bytes));
     if let Some(existing) = list_sources(db)?.into_iter().find(|source| {
-        source.blob_hash == hash
+        source.conversation_id.as_deref() == Some(conversation_id)
+            && source.blob_hash == hash
             && source.origin_path == origin_path
             && source.archive_path == archive_path
             && source.display_name == display_name
@@ -45,6 +48,7 @@ pub fn add_source(
     let compressed = zstd::stream::encode_all(Cursor::new(bytes), 3)?;
     let source = WorkspaceSource {
         id: Uuid::new_v4().to_string(),
+        conversation_id: Some(conversation_id.to_string()),
         display_name,
         origin_path,
         archive_path,
@@ -54,13 +58,14 @@ pub fn add_source(
         created_at: now_ms(),
     };
 
-    db.with_conn(|conn| {
-        conn.execute(
+    db.with_conn_mut(|conn| {
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT OR IGNORE INTO blobs(hash,data,original_size) VALUES(?1,?2,?3)",
             params![hash, compressed, bytes.len() as i64],
         )?;
-        conn.execute(
-            "INSERT INTO workspace_sources(id,display_name,origin_path,archive_path,blob_hash,line_count,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        tx.execute(
+            "INSERT INTO workspace_sources(id,display_name,origin_path,archive_path,blob_hash,line_count,created_at,conversation_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 source.id,
                 source.display_name,
@@ -69,8 +74,10 @@ pub fn add_source(
                 source.blob_hash,
                 source.line_count,
                 source.created_at,
+                source.conversation_id,
             ],
         )?;
+        tx.commit()?;
         Ok(())
     })?;
     Ok(source)
@@ -79,7 +86,7 @@ pub fn add_source(
 pub fn list_sources(db: &Database) -> AppResult<Vec<WorkspaceSource>> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT ws.id,ws.display_name,ws.origin_path,ws.archive_path,ws.blob_hash,b.original_size,ws.line_count,ws.created_at
+            "SELECT ws.id,ws.display_name,ws.origin_path,ws.archive_path,ws.blob_hash,b.original_size,ws.line_count,ws.created_at,ws.conversation_id
              FROM workspace_sources ws JOIN blobs b ON b.hash=ws.blob_hash
              ORDER BY ws.created_at ASC",
         )?;
@@ -90,11 +97,44 @@ pub fn list_sources(db: &Database) -> AppResult<Vec<WorkspaceSource>> {
     })
 }
 
+/// Explicitly reuse a source in another chat; attachments remain independent.
+pub fn reference_source(
+    db: &Database,
+    conversation_id: &str,
+    source_id: &str,
+) -> AppResult<WorkspaceSource> {
+    let source = get_source(db, source_id)?
+        .ok_or_else(|| AppError::Message("workspace source not found".into()))?;
+    if let Some(existing) = list_sources(db)?.into_iter().find(|item| {
+        item.conversation_id.as_deref() == Some(conversation_id)
+            && item.blob_hash == source.blob_hash
+            && item.display_name == source.display_name
+            && item.origin_path == source.origin_path
+            && item.archive_path == source.archive_path
+    }) {
+        return Ok(existing);
+    }
+    let referenced = WorkspaceSource {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: Some(conversation_id.to_string()),
+        created_at: now_ms(),
+        ..source
+    };
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO workspace_sources(id,display_name,origin_path,archive_path,blob_hash,line_count,created_at,conversation_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![referenced.id, referenced.display_name, referenced.origin_path, referenced.archive_path, referenced.blob_hash, referenced.line_count, referenced.created_at, referenced.conversation_id],
+        )?;
+        Ok(())
+    })?;
+    Ok(referenced)
+}
+
 pub fn get_source(db: &Database, source_id: &str) -> AppResult<Option<WorkspaceSource>> {
     db.with_conn(|conn| {
         Ok(conn
             .query_row(
-                "SELECT ws.id,ws.display_name,ws.origin_path,ws.archive_path,ws.blob_hash,b.original_size,ws.line_count,ws.created_at
+                "SELECT ws.id,ws.display_name,ws.origin_path,ws.archive_path,ws.blob_hash,b.original_size,ws.line_count,ws.created_at,ws.conversation_id
                  FROM workspace_sources ws JOIN blobs b ON b.hash=ws.blob_hash WHERE ws.id=?1",
                 [source_id],
                 row_source,
@@ -176,13 +216,21 @@ fn row_slice_base(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ContextSlice, St
 }
 
 pub fn list_slices(db: &Database) -> AppResult<Vec<ContextSlice>> {
+    query_slices(db, None)
+}
+
+pub fn conversation_slices(db: &Database, conversation_id: &str) -> AppResult<Vec<ContextSlice>> {
+    query_slices(db, Some(conversation_id))
+}
+
+fn query_slices(db: &Database, conversation_id: Option<&str>) -> AppResult<Vec<ContextSlice>> {
     let rows: Vec<(ContextSlice, String)> = db.with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT cs.id,cs.source_id,ws.display_name,cs.range_type,cs.start_pos,cs.end_pos,cs.enabled,cs.sort_order,cs.wrapper,cs.insert_at,ws.blob_hash
-             FROM context_slices cs JOIN workspace_sources ws ON ws.id=cs.source_id ORDER BY cs.sort_order ASC, cs.id ASC",
+             FROM context_slices cs JOIN workspace_sources ws ON ws.id=cs.source_id WHERE (?1 IS NULL OR ws.conversation_id=?1) ORDER BY cs.sort_order ASC, cs.id ASC",
         )?;
         let rows = stmt
-            .query_map([], row_slice_base)?
+            .query_map([conversation_id], row_slice_base)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     })?;
@@ -301,13 +349,13 @@ pub fn gc_unreferenced_blobs(tx: &Transaction<'_>) -> AppResult<()> {
 }
 
 /// Require the complete current order so concurrent changes cannot silently disappear.
-pub fn reorder_slices(db: &Database, slice_ids: &[String]) -> AppResult<()> {
+pub fn reorder_slices(db: &Database, conversation_id: &str, slice_ids: &[String]) -> AppResult<()> {
     db.with_conn_mut(|conn| {
         let tx = conn.transaction()?;
         let current = {
-            let mut stmt = tx.prepare("SELECT id FROM context_slices")?;
+            let mut stmt = tx.prepare("SELECT cs.id FROM context_slices cs JOIN workspace_sources ws ON ws.id=cs.source_id WHERE ws.conversation_id=?1")?;
             let ids = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
+                .query_map([conversation_id], |row| row.get::<_, String>(0))?
                 .collect::<Result<HashSet<_>, _>>()?;
             ids
         };
@@ -346,8 +394,10 @@ mod tests {
     #[test]
     fn invalid_ranges_do_not_persist_and_repeated_includes_update_in_place() {
         let db = Database::open(":memory:".into()).unwrap();
+        let conversation = crate::db::chat::create_conversation(&db).unwrap();
         let source = add_source(
             &db,
+            &conversation.id,
             "sample.txt".into(),
             "sample.txt".into(),
             None,
@@ -357,6 +407,7 @@ mod tests {
         assert_eq!(
             add_source(
                 &db,
+                &conversation.id,
                 "sample.txt".into(),
                 "sample.txt".into(),
                 None,
@@ -399,17 +450,99 @@ mod tests {
     #[test]
     fn reorder_is_atomic_and_rejects_stale_or_duplicate_orders() {
         let db = Database::open(":memory:".into()).unwrap();
-        let first = add_source(&db, "a.txt".into(), "a".into(), None, "A").unwrap();
-        let second = add_source(&db, "b.txt".into(), "b".into(), None, "B").unwrap();
+        let conversation = crate::db::chat::create_conversation(&db).unwrap();
+        let first =
+            add_source(&db, &conversation.id, "a.txt".into(), "a".into(), None, "A").unwrap();
+        let second =
+            add_source(&db, &conversation.id, "b.txt".into(), "b".into(), None, "B").unwrap();
         let a = add_slice(&db, args(&first)).unwrap();
         let b = add_slice(&db, args(&second)).unwrap();
-        reorder_slices(&db, &[b.id.clone(), a.id.clone()]).unwrap();
+        reorder_slices(&db, &conversation.id, &[b.id.clone(), a.id.clone()]).unwrap();
         assert_eq!(list_slices(&db).unwrap()[0].id, b.id);
-        assert!(reorder_slices(&db, &[a.id.clone(), a.id.clone()]).is_err());
-        assert!(reorder_slices(&db, &[a.id]).is_err());
+        assert!(reorder_slices(&db, &conversation.id, &[a.id.clone(), a.id.clone()]).is_err());
+        assert!(reorder_slices(&db, &conversation.id, &[a.id]).is_err());
         let order = list_slices(&db).unwrap();
         assert_eq!(order[0].id, b.id);
         assert_eq!(order[0].sort_order, 0);
         assert_eq!(order[1].sort_order, 1);
+    }
+
+    #[test]
+    fn chat_libraries_persist_and_explicit_references_survive_source_deletion() {
+        let path = std::env::temp_dir().join(format!("cerachat-scope-{}.sqlite", Uuid::new_v4()));
+        let db = Database::open(path.clone()).unwrap();
+        let a = crate::db::chat::create_conversation(&db).unwrap();
+        let b = crate::db::chat::create_conversation(&db).unwrap();
+        let source = add_source(&db, &a.id, "a.txt".into(), "paste".into(), None, "AAA").unwrap();
+        let attachment = add_slice(&db, args(&source)).unwrap();
+        assert!(conversation_slices(&db, &b.id).unwrap().is_empty());
+        let referenced = reference_source(&db, &b.id, &source.id).unwrap();
+        assert_ne!(referenced.id, source.id);
+        assert_eq!(referenced.blob_hash, source.blob_hash);
+        assert_eq!(
+            reference_source(&db, &b.id, &source.id).unwrap().id,
+            referenced.id
+        );
+        assert_eq!(
+            add_source(&db, &b.id, "a.txt".into(), "paste".into(), None, "AAA")
+                .unwrap()
+                .id,
+            referenced.id
+        );
+        assert!(conversation_slices(&db, &b.id).unwrap().is_empty());
+        let copied_attachment = add_slice(&db, args(&referenced)).unwrap();
+        assert_ne!(attachment.id, copied_attachment.id);
+        // Reordering one chat requires only its own attachments.
+        reorder_slices(&db, &a.id, std::slice::from_ref(&attachment.id)).unwrap();
+        assert!(reorder_slices(&db, &a.id, std::slice::from_ref(&copied_attachment.id)).is_err());
+        drop(db);
+        let db = Database::open(path.clone()).unwrap();
+        assert_eq!(
+            conversation_slices(&db, &a.id).unwrap()[0].id,
+            attachment.id
+        );
+        assert_eq!(
+            conversation_slices(&db, &b.id).unwrap()[0].id,
+            copied_attachment.id
+        );
+        remove_source(&db, &source.id).unwrap();
+        assert!(conversation_slices(&db, &a.id).unwrap().is_empty());
+        assert_eq!(source_text(&db, &referenced.id).unwrap(), "AAA");
+        let second = add_source(&db, &a.id, "b.txt".into(), "paste".into(), None, "BBB").unwrap();
+        let second_reference = reference_source(&db, &b.id, &second.id).unwrap();
+        crate::db::chat::delete_conversation(&db, &a.id).unwrap();
+        assert_eq!(list_sources(&db).unwrap().len(), 2);
+        assert_eq!(source_text(&db, &second_reference.id).unwrap(), "BBB");
+        crate::db::chat::delete_conversation(&db, &b.id).unwrap();
+        assert!(list_sources(&db).unwrap().is_empty());
+        assert!(list_slices(&db).unwrap().is_empty());
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))?;
+            assert_eq!(count, 0);
+            Ok(())
+        })
+        .unwrap();
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn legacy_sources_remain_available_only_for_explicit_reuse() {
+        let db = Database::open(":memory:".into()).unwrap();
+        let chat = crate::db::chat::create_conversation(&db).unwrap();
+        let legacy =
+            add_source(&db, &chat.id, "old.txt".into(), "paste".into(), None, "OLD").unwrap();
+        add_slice(&db, args(&legacy)).unwrap();
+        db.with_conn(|conn| {
+            conn.execute("UPDATE workspace_sources SET conversation_id=NULL", [])?;
+            super::super::schema::migrate(conn)?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(list_sources(&db).unwrap()[0].conversation_id.is_none());
+        assert!(conversation_slices(&db, &chat.id).unwrap().is_empty());
+        let restored = reference_source(&db, &chat.id, &legacy.id).unwrap();
+        assert_eq!(source_text(&db, &restored.id).unwrap(), "OLD");
+        assert_eq!(restored.conversation_id.as_deref(), Some(chat.id.as_str()));
     }
 }

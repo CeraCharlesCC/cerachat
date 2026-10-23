@@ -128,6 +128,10 @@ export async function deleteConversation(conversationId: string): Promise<void> 
   if (!isTauri()) {
     browserBootstrap.conversations = browserBootstrap.conversations.filter((item) => item.id !== conversationId)
     browserMessages = browserMessages.filter((message) => message.conversation_id !== conversationId)
+    const removed = new Set(browserBootstrap.sources.filter((source) => source.conversation_id === conversationId).map((source) => source.id))
+    browserBootstrap.sources = browserBootstrap.sources.filter((source) => !removed.has(source.id))
+    browserBootstrap.slices = browserBootstrap.slices.filter((slice) => !removed.has(slice.source_id))
+    for (const id of removed) browserSourceTexts.delete(id)
     return
   }
   await call('delete_conversation', { conversationId })
@@ -193,13 +197,14 @@ function sliceText(args: AddSliceArgs): string {
   return units.slice(start - offset, end).join(offset ? '\n' : '') + (offset && end < units.length ? '\n' : '')
 }
 
-export async function addTextSource(name: string, text: string): Promise<WorkspaceSource> {
-  if (isTauri()) return call('add_text_source', { name, text })
+export async function addTextSource(conversationId: string, name: string, text: string): Promise<WorkspaceSource> {
+  if (isTauri()) return call('add_text_source', { conversationId, name, text })
+  requireBrowserConversation(conversationId)
   if (!name.trim() || !text.trim()) throw new Error('A name and text are required')
-  const existing = browserBootstrap.sources.find((source) => source.origin_path === 'pasted-text' && source.display_name === name.trim() && sourceText(source.id) === text)
+  const existing = browserBootstrap.sources.find((source) => source.conversation_id === conversationId && source.origin_path === 'pasted-text' && source.display_name === name.trim() && sourceText(source.id) === text)
   if (existing) return structuredClone(existing)
   const source: WorkspaceSource = {
-    id: crypto.randomUUID(), display_name: name.trim(), origin_path: 'pasted-text', archive_path: null,
+    id: crypto.randomUUID(), conversation_id: conversationId, display_name: name.trim(), origin_path: 'pasted-text', archive_path: null,
     blob_hash: 'browser-text', original_size: new TextEncoder().encode(text).length,
     line_count: text ? text.split('\n').length : 0, created_at: Date.now(),
   }
@@ -208,20 +213,47 @@ export async function addTextSource(name: string, text: string): Promise<Workspa
   return structuredClone(source)
 }
 
-export async function reorderContextSlices(sliceIds: string[]): Promise<void> {
-  if (isTauri()) return call('reorder_context_slices', { sliceIds })
+export async function reorderContextSlices(conversationId: string, sliceIds: string[]): Promise<void> {
+  if (isTauri()) return call('reorder_context_slices', { conversationId, sliceIds })
+  const slices = browserConversationSlices(conversationId)
   const ids = new Set(sliceIds)
-  if (ids.size !== sliceIds.length || ids.size !== browserBootstrap.slices.length || browserBootstrap.slices.some((slice) => !ids.has(slice.id))) throw new Error('Context changed; refresh and try reordering again')
-  browserBootstrap.slices.forEach((slice) => { slice.sort_order = sliceIds.indexOf(slice.id) })
+  if (ids.size !== sliceIds.length || ids.size !== slices.length || slices.some((slice) => !ids.has(slice.id))) throw new Error('Context changed; refresh and try reordering again')
+  slices.forEach((slice) => { slice.sort_order = sliceIds.indexOf(slice.id) })
 }
 
-export async function importSources(paths: string[]): Promise<WorkspaceSource[]> {
+export async function importSources(conversationId: string, paths: string[]): Promise<WorkspaceSource[]> {
   if (!isTauri()) throw new Error('File import is available in the desktop app')
-  return call<WorkspaceSource[]>('import_sources', { paths })
+  return call<WorkspaceSource[]>('import_sources', { conversationId, paths })
+}
+
+function requireBrowserConversation(conversationId: string) {
+  if (!browserBootstrap.conversations.some((conversation) => conversation.id === conversationId)) throw new Error('Conversation not found')
+}
+
+function browserConversationSlices(conversationId: string): ContextSlice[] {
+  const sourceIds = new Set(browserBootstrap.sources.filter((source) => source.conversation_id === conversationId).map((source) => source.id))
+  return browserBootstrap.slices.filter((slice) => sourceIds.has(slice.source_id))
+}
+
+export async function referenceSource(conversationId: string, sourceId: string): Promise<WorkspaceSource> {
+  if (isTauri()) return call('reference_source', { conversationId, sourceId })
+  requireBrowserConversation(conversationId)
+  const source = browserBootstrap.sources.find((source) => source.id === sourceId)
+  if (!source) throw new Error('Source not found')
+  const text = sourceText(source.id)
+  const existing = browserBootstrap.sources.find((item) => item.conversation_id === conversationId
+    && item.display_name === source.display_name && item.origin_path === source.origin_path
+    && item.archive_path === source.archive_path && sourceText(item.id) === text)
+  if (existing) return structuredClone(existing)
+  const referenced = { ...source, id: crypto.randomUUID(), conversation_id: conversationId, created_at: Date.now() }
+  browserBootstrap.sources.push(referenced)
+  browserSourceTexts.set(referenced.id, text)
+  return structuredClone(referenced)
 }
 
 export async function removeSource(sourceId: string): Promise<void> {
   if (!isTauri()) {
+    browserSourceTexts.delete(sourceId)
     browserBootstrap.sources = browserBootstrap.sources.filter((source) => source.id !== sourceId)
     browserBootstrap.slices = browserBootstrap.slices.filter((slice) => slice.source_id !== sourceId)
     return
@@ -366,6 +398,7 @@ export async function selectModel(uniqueModelId: UniqueModelId): Promise<Provide
 export async function compileRequest(args: CompileRequestArgs): Promise<RequestPreview> {
   if (isTauri()) return call('compile_request', { args })
   const provider = activeBrowserProvider()
+  requireBrowserConversation(args.conversationId)
   const history: Message[] = []
   let currentId = args.parentId
   while (currentId) {
@@ -385,7 +418,7 @@ export async function compileRequest(args: CompileRequestArgs): Promise<RequestP
   selected = selected.filter((message) => message.include_next)
   const parts = { before_current: [], inside_current: [], before_history: [], system: [] } as Record<ContextSlice['insert_at'], string[]>
   const join = (values: string[]) => values.filter((value) => value.length > 0).join(provider.context_separator)
-  for (const slice of [...browserBootstrap.slices].sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))) {
+  for (const slice of browserConversationSlices(args.conversationId).sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))) {
     if (!slice.enabled) continue
     const text = sliceText({ sourceId: slice.source_id, rangeType: slice.range_type, startPos: slice.start_pos, endPos: slice.end_pos, wrapper: slice.wrapper, insertAt: slice.insert_at })
     const range = slice.range_type === 'lines' ? ` L${slice.start_pos}-${slice.end_pos}` : slice.range_type === 'chars' ? ` chars ${slice.start_pos}-${slice.end_pos}` : ''

@@ -72,6 +72,7 @@ pub struct ProviderCatalog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSource {
     pub id: String,
+    pub conversation_id: Option<String>,
     pub display_name: String,
     pub origin_path: String,
     pub archive_path: Option<String>,

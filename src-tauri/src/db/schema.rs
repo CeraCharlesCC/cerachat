@@ -69,5 +69,61 @@ CREATE TABLE IF NOT EXISTS request_context (
   FOREIGN KEY(blob_hash) REFERENCES blobs(hash)
 );
 "#)?;
+    // Legacy global sources have no reliable chat ownership. Keep them available
+    // for explicit reuse without silently attaching them to any conversation.
+    let has_owner = {
+        let mut stmt = conn.prepare("PRAGMA table_info(workspace_sources)")?;
+        let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        columns
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "conversation_id")
+    };
+    if !has_owner {
+        conn.execute_batch("ALTER TABLE workspace_sources ADD COLUMN conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE;")?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_workspace_sources_conversation ON workspace_sources(conversation_id);")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_preserves_legacy_library_and_adds_chat_ownership_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch("CREATE TABLE blobs (hash TEXT PRIMARY KEY, data BLOB NOT NULL, original_size INTEGER NOT NULL);
+            CREATE TABLE workspace_sources (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, origin_path TEXT NOT NULL,
+                archive_path TEXT, blob_hash TEXT NOT NULL, line_count INTEGER NOT NULL, created_at INTEGER NOT NULL,
+                FOREIGN KEY(blob_hash) REFERENCES blobs(hash));
+            INSERT INTO blobs VALUES('hash', X'00', 3);
+            INSERT INTO workspace_sources VALUES('legacy', 'old.txt', 'paste', NULL, 'hash', 1, 1);").unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let legacy: (String, Option<String>) = conn
+            .query_row(
+                "SELECT display_name,conversation_id FROM workspace_sources WHERE id='legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(legacy, ("old.txt".into(), None));
+        conn.execute("INSERT INTO conversations VALUES('chat', 'Chat', 1, 1)", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE workspace_sources SET conversation_id='chat' WHERE id='legacy'",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM conversations WHERE id='chat'", [])
+            .unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workspace_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
 }
