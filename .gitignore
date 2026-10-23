@@ -15,6 +15,7 @@ test-results
 /src-tauri/target/
 /src-tauri/gen/
 *.local
+/AGENT.local.md
 
 # Editor directories and files
 .vscode/*
