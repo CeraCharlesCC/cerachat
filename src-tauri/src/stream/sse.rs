@@ -127,7 +127,7 @@ pub fn openai_delta(data: &str) -> AppResult<StreamDelta> {
             .filter(|s| !s.is_empty())
         {
             result.reasoning.parts.push(crate::models::ReasoningPart {
-                include_next: false,
+                include_next: true,
                 id: "chat-reasoning".into(),
                 kind: "text".into(),
                 text: text.into(),
@@ -171,7 +171,7 @@ impl ResponsesDecoder {
         };
         if !addition.is_empty() {
             result.reasoning.parts.push(crate::models::ReasoningPart {
-                include_next: false,
+                include_next: kind == "text",
                 id,
                 kind: kind.into(),
                 text: addition.into(),
@@ -319,6 +319,7 @@ mod tests {
         assert_eq!(delta.text.as_deref(), Some("answer"));
         assert_eq!(delta.reasoning.parts[0].text, "考え中");
         assert_eq!(delta.reasoning.parts[0].kind, "text");
+        assert!(delta.reasoning.parts[0].include_next);
         let alias = openai_delta(
             r#"{"choices":[{"delta":{"reasoning_content":null,"reasoning":"thinking"}}]}"#,
         )

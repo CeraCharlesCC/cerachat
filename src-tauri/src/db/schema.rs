@@ -94,6 +94,19 @@ CREATE TABLE IF NOT EXISTS request_context (
     if !has_reasoning {
         conn.execute_batch("ALTER TABLE messages ADD COLUMN reasoning_json TEXT;")?;
     }
+    let has_images = {
+        let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+        let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        columns
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "images_json")
+    };
+    if !has_images {
+        conn.execute_batch(
+            "ALTER TABLE messages ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]';",
+        )?;
+    }
     Ok(())
 }
 

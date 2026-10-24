@@ -21,6 +21,7 @@ const newProvider = (): ProviderProfile => ({
 })
 
 interface ModelDraft {
+  image_input: boolean
   temperature: number | null
   raw_json_overrides: string
   provider_id: string
@@ -31,11 +32,11 @@ interface ModelDraft {
 }
 
 function toModelDraft(model: ModelProfile): ModelDraft {
-  return { ...model, context_window: String(model.context_window), max_output_tokens: String(model.max_output_tokens) }
+  return { ...model, image_input: model.image_input ?? false, context_window: String(model.context_window), max_output_tokens: String(model.max_output_tokens) }
 }
 
 function blankModel(providerId: string): ModelDraft {
-  return { provider_id: providerId, model_id: '', name: '', context_window: '131072', max_output_tokens: '16384', temperature: null, raw_json_overrides: '{}' }
+  return { image_input: false, provider_id: providerId, model_id: '', name: '', context_window: '131072', max_output_tokens: '16384', temperature: null, raw_json_overrides: '{}' }
 }
 
 function errorText(reason: unknown): string {
@@ -162,6 +163,7 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
     setBusy(true)
     try {
       const model: ModelProfile = {
+        image_input: modelDraft.image_input,
         provider_id: modelDraft.provider_id,
         model_id: modelDraft.model_id,
         name: modelDraft.name,
@@ -274,6 +276,7 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
                           <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>Display name (optional)<input className={fieldClass} value={modelDraft.name} onChange={(event) => updateModel('name', event.target.value)} placeholder="Uses model ID when empty" /></label>
                           <label className={labelClass}>Context window<input className={fieldClass} type="number" min="1" max="4294967295" step="1" value={modelDraft.context_window} onChange={(event) => updateModel('context_window', event.target.value)} /></label>
                           <label className={labelClass}>Max output tokens<input className={fieldClass} type="number" min="1" max="4294967295" step="1" value={modelDraft.max_output_tokens} onChange={(event) => updateModel('max_output_tokens', event.target.value)} /></label>
+                          <label className="col-span-2 flex flex-col gap-1 text-xs max-sm:col-span-1"><span className="flex items-center gap-2"><input type="checkbox" checked={modelDraft.image_input} onChange={(event) => updateModel('image_input', event.target.checked)} />Enable image input</span><span className="text-muted-foreground">Enable only if this service and model accept inline images. Off by default; model names do not determine support.</span></label>
                           <ModelParameters key={`${modelDraft.provider_id}::${modelDraft.model_id}`} model={modelDraft} protocol={catalog.providers.find((provider) => provider.id === modelDraft.provider_id)?.protocol ?? providerDraft.protocol} onChange={(parameters) => setModelDraft((current) => current ? { ...current, ...parameters } : current)} />
                           <div className="col-span-2 flex justify-end gap-2 max-sm:col-span-1">{modelPersisted && <Button variant="destructive" onClick={() => void handleDeleteModel()} disabled={busy}><Trash2 size={14} />Delete model</Button>}<Button variant="primary" onClick={() => void handleSaveModel()} disabled={busy}>{busy ? 'Saving…' : 'Save model'}</Button></div>
                         </fieldset>

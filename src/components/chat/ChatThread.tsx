@@ -23,7 +23,7 @@ export function ChatThread({ messages, onSelectSibling, path, streamingText, str
   onReasoningIncludedChange: (message: Message, partId: string, included: boolean) => void
   onEdit: (message: Message) => void
   onCancelEdit: () => void
-  onSaveEdit: (content: string) => Promise<void>
+  onSaveEdit: (content: string, reasoning?: Reasoning | null) => Promise<void>
   onCopy: (message: Message) => void
   onRegenerate: (message: Message) => void
   onDelete: (message: Message) => void

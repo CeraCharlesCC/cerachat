@@ -1,11 +1,12 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useRef } from 'react'
 import { IconButton } from '../ui/IconButton'
-import type { Message } from '../../types'
+import type { Message, Reasoning } from '../../types'
 import { MarkdownContent } from './MarkdownContent'
 import { MessageActions } from './MessageActions'
 import { ReasoningContent } from './ReasoningContent'
 import { MessageEditor } from './MessageEditor'
+import { ImageAttachments } from './ImageAttachments'
 
 export function ChatMessage({ message, copied, editing, lastAssistant, actionsDisabled, regenerateDisabled, siblings, onSelectSibling, onIncludedChange, onReasoningIncludedChange, onCopy, onEdit, onCancelEdit, onSaveEdit, onRegenerate, onDelete }: {
   siblings: Message[]
@@ -20,7 +21,7 @@ export function ChatMessage({ message, copied, editing, lastAssistant, actionsDi
   onReasoningIncludedChange: (partId: string, included: boolean) => void
   onEdit: () => void
   onCancelEdit: () => void
-  onSaveEdit: (content: string) => Promise<void>
+  onSaveEdit: (content: string, reasoning?: Reasoning | null) => Promise<void>
   onCopy: () => void
   onRegenerate: () => void
   onDelete: () => void
@@ -38,7 +39,8 @@ export function ChatMessage({ message, copied, editing, lastAssistant, actionsDi
         <div className={isUser
           ? 'max-w-[85%] min-w-0 rounded-2xl bg-muted px-4 py-2.5 text-foreground md:max-w-[75%]'
           : 'w-full px-2 text-foreground'}>
-          {!isUser && <ReasoningContent reasoning={message.reasoning} disabled={actionsDisabled} messageIncluded={message.include_next} onIncludedChange={onReasoningIncludedChange} />}
+          {!isUser && <ReasoningContent reasoning={message.reasoning} disabled={actionsDisabled} messageIncluded={message.include_next} onIncludedChange={onReasoningIncludedChange} onEdit={onEdit} />}
+          <ImageAttachments images={message.images ?? []} />
           {isUser ? <div className="whitespace-pre-wrap break-words text-[15px] leading-[1.8] [overflow-wrap:anywhere]">{message.content}</div> : <MarkdownContent content={message.content} />}
         </div>
         <div className={`message-action-row flex flex-wrap items-center gap-2 transition-opacity ${isUser ? 'mr-1 justify-end' : 'ml-1'}`}>

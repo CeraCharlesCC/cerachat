@@ -79,9 +79,10 @@ export function validateProvider(provider: unknown): asserts provider is Provide
 }
 
 export function validateModel(model: unknown): asserts model is ModelProfile {
-  if (!isRecord(model) || !hasExactKeys(model, ['provider_id', 'model_id', 'name', 'context_window', 'max_output_tokens', 'temperature', 'raw_json_overrides'])) {
+  if (!isRecord(model) || !hasExactKeys(model, ['provider_id', 'model_id', 'name', 'context_window', 'max_output_tokens', 'temperature', 'raw_json_overrides', ...('image_input' in model ? ['image_input'] : [])])) {
     throw new Error('Model has an invalid shape')
   }
+  if (model.image_input !== undefined && typeof model.image_input !== 'boolean') throw new Error('Image input must be a boolean')
   assertIdentifier(model.provider_id, 'Model provider ID')
   assertIdentifier(model.model_id, `Model ID for provider ${model.provider_id}`)
   assertString(model.name, `Model ${model.provider_id}::${model.model_id} name`)
@@ -150,6 +151,7 @@ export function resolveProviderConfig(catalog: ProviderCatalog, apiKey: string):
     ...active.provider,
     api_key: apiKey,
     model: active.model.model_id,
+    image_input: active.model.image_input ?? false,
     context_window: active.model.context_window,
     max_output_tokens: active.model.max_output_tokens,
     temperature: active.model.temperature,

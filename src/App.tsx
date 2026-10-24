@@ -41,12 +41,14 @@ import {
   subscribeStream,
   updateContextSlice,
 } from './lib/backend'
+import { readImages, MAX_IMAGES, IMAGE_INPUT_HELP } from './lib/images'
 import { historyContent, mergeReasoning } from './lib/reasoning'
 import { estimateTokens, formatTokens } from './lib/utils'
 import type {
   BootstrapState,
   ContextSlice,
   HistoryMode,
+  ImageAttachment,
   InsertAt,
   Message,
   ProviderCatalog,
@@ -88,6 +90,8 @@ export default function App() {
   const [historyMode, setHistoryMode] = useState<HistoryMode>('full')
   const [sinceMessageId, setSinceMessageId] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [imageDrafts, setImageDrafts] = useState<Record<string, ImageAttachment[]>>({})
+  const [readingImages, setReadingImages] = useState(false)
   const [preview, setPreview] = useState<RequestPreview | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [viewerSource, setViewerSource] = useState<WorkspaceSource | null>(null)
@@ -115,8 +119,6 @@ export default function App() {
   const widths = fitSidebars(sidebarSpace, threadsOpen ? Math.min(400, Math.max(200, preferredThreadsWidth)) : 0, contextOpen ? Math.min(560, Math.max(300, preferredContextWidth)) : 0)
   const threadsMax = Math.min(400, sidebarSpace - widths.context)
   const contextMax = Math.min(560, sidebarSpace - widths.threads)
-  const composerMax = Math.max(200, Math.min(viewport.height * 0.6, viewport.height - 300))
-  const composerHeight = Math.min(composerMax, Math.max(200, preferredComposerHeight))
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
@@ -233,27 +235,37 @@ export default function App() {
     return (state?.slices ?? []).filter((slice) => ids.has(slice.source_id)).sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))
   }, [state?.slices, chatSources])
   const workspaceTokens = orderedSlices.filter((slice) => slice.enabled).reduce((sum, slice) => sum + slice.estimated_tokens, 0)
-  const historyTokens = useMemo(() => {
+  const selectedHistory = useMemo(() => {
     let selected = historyMode === 'no_history' ? [] : historyMode === 'last10' ? path.slice(-10) : path
     if (historyMode === 'since_here') {
       const index = path.findIndex((message) => message.id === sinceMessageId)
       selected = index < 0 ? [] : path.slice(index)
     }
-    return selected.filter((message) => message.include_next).reduce((sum, message) => sum + estimateTokens(historyContent(message)), 0)
+    return selected.filter((message) => message.include_next)
   }, [path, historyMode, sinceMessageId])
+  const historyTokens = selectedHistory.reduce((sum, message) => sum + estimateTokens(historyContent(message)), 0)
+  const images = conversationId ? imageDrafts[conversationId] ?? [] : []
+  const historyImageCount = selectedHistory.reduce((sum, message) => sum + (message.images?.length ?? 0), 0)
   const input = conversationId ? drafts[conversationId] ?? "" : ""
   const sendParentId = activeLeafId
   const catalog = state?.provider_catalog
   const activeModel = catalog?.models.find((model) => `${model.provider_id}::${model.model_id}` === catalog.selected_model_id)
   const activeProvider = catalog?.providers.find((provider) => provider.id === activeModel?.provider_id)
   const hasActiveModel = Boolean(activeModel && activeProvider)
+  const imageBlocked = Boolean(images.length + historyImageCount) && !activeModel?.image_input
+  const imageWarning = imageBlocked ? `${IMAGE_INPUT_HELP} Remove draft images or exclude image messages using Include next / No history.` : null
+  const composerMin = images.length ? (imageBlocked ? 384 : 320) : imageBlocked ? 264 : 200
+  const composerMax = Math.max(composerMin, Math.min(viewport.height * 0.6, viewport.height - 300))
+  const composerHeight = Math.min(composerMax, Math.max(composerMin, preferredComposerHeight))
   const canCompile = Boolean(conversationId)
+    && !imageBlocked
+    && !readingImages
     && hasActiveModel
     && !catalogBusy
     && !busy
     && !streaming
     && !editingMessage
-    && (input.length > 0 || workspaceTokens > 0)
+    && (input.length > 0 || images.length > 0 || workspaceTokens > 0)
     && (historyMode !== "since_here" || Boolean(sinceMessageId))
 
   useEffect(() => {
@@ -268,6 +280,7 @@ export default function App() {
     conversationId: conversationId as string,
     parentId: sendParentId,
     input,
+    images,
     historyMode,
     sinceMessageId: historyMode === "since_here" ? sinceMessageId : null,
   })
@@ -281,12 +294,28 @@ export default function App() {
     try {
       await sendMessage(requestArgs())
       setDrafts((current) => ({ ...current, [conversationId]: "" }))
+      setImageDrafts((current) => ({ ...current, [conversationId]: [] }))
       textareaRef.current?.focus()
     } catch (reason) {
       await handleRequestError(reason)
     } finally {
       setBusy(false)
     }
+  }
+
+  const handleAddImages = async (files: File[]) => {
+    if (!conversationId || readingImages || busy || streaming || editingMessage) return
+    if (!activeModel?.image_input) { setError(IMAGE_INPUT_HELP); return }
+    setError(null)
+    setReadingImages(true)
+    const chatId = conversationId
+    try {
+      if (images.length + files.length > MAX_IMAGES) throw new Error('Attach at most 4 images per message.')
+      const added = await readImages(files)
+      setImageDrafts((current) => ({ ...current, [chatId]: [...(current[chatId] ?? []), ...added] }))
+      setPreview(null)
+    } catch (reason) { setError(String(reason)) }
+    finally { setReadingImages(false) }
   }
 
   const handlePreview = async () => {
@@ -542,11 +571,11 @@ export default function App() {
             setEditingMessage(message)
           }}
           onCancelEdit={() => setEditingMessage(null)}
-          onSaveEdit={async (content) => {
+          onSaveEdit={async (content, reasoning) => {
             if (!editingMessage || busy || streaming) return
             setBusy(true)
             try {
-              const edited = await editMessage(editingMessage.id, content)
+              const edited = await editMessage(editingMessage.id, content, reasoning)
               setMessages((current) => [...current.filter((message) => message.id !== edited.id), edited])
               selectLeaf(edited.id)
               setPreview(null)
@@ -558,11 +587,18 @@ export default function App() {
           onRegenerate={(message) => void handleRegenerate(message)}
           onDelete={(message) => { if (confirm('Delete this message and all descendants?')) void deleteBranch(message.id).then(async () => { if (conversationId) await loadConversation(conversationId); await refreshBootstrap() }).catch((reason) => setError(String(reason))) }}
         />
-        <ResizeHandle label="Resize message composer" controls="message-composer" orientation="horizontal" direction={-1} value={composerHeight} min={200} max={composerMax} onChange={setComposerHeight} onReset={() => setComposerHeight(224)} />
+        <ResizeHandle label="Resize message composer" controls="message-composer" orientation="horizontal" direction={-1} value={composerHeight} min={composerMin} max={composerMax} onChange={setComposerHeight} onReset={() => setComposerHeight(224)} />
         <Composer
           height={composerHeight}
           textareaRef={textareaRef}
           input={input}
+          images={images}
+          imageInputEnabled={Boolean(activeModel?.image_input)}
+          imageWarning={imageWarning}
+          imageCount={images.length + historyImageCount}
+          readingImages={readingImages}
+          onAddImages={(files) => void handleAddImages(files)}
+          onRemoveImage={(index) => { if (conversationId) { setImageDrafts((current) => ({ ...current, [conversationId]: images.filter((_, i) => i !== index) })); setPreview(null) } }}
           historyMode={historyMode}
           sinceMessageId={sinceMessageId}
           path={path}

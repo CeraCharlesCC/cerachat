@@ -87,6 +87,7 @@ where
             )))
         }
     };
+    let has_images = request_json.contains("\"image_url\"");
     let mut request = client
         .post(if is_responses {
             responses_endpoint(&provider.base_url)
@@ -105,8 +106,13 @@ where
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         let short: String = body.chars().take(4096).collect();
+        let hint = if has_images && matches!(status.as_u16(), 400 | 413 | 415 | 422) {
+            " Image input was included. Check this service/model's image support, formats, size and count limits. Adjust Provider settings or exclude image messages before explicitly retrying."
+        } else {
+            ""
+        };
         return Err(AppError::Message(format!(
-            "provider returned {status}: {short}"
+            "provider returned {status}: {short}{hint}"
         )));
     }
 
@@ -212,6 +218,7 @@ mod tests {
                 assert!(listener.accept().is_err(), "cancellation must not retry");
             });
             let provider = ProviderConfig {
+                image_input: false,
                 id: "test".into(),
                 name: "Test".into(),
                 protocol: "openai_chat_completions".into(),
@@ -248,6 +255,79 @@ mod tests {
             }
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn rejected_image_requests_preserve_the_exact_body_and_do_not_retry_without_images() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let request_json = serde_json::json!({
+            "model": "arbitrary-model", "stream": true,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}
+            ]}]
+        })
+        .to_string();
+        let expected = request_json.clone();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut headers = Vec::new();
+            let mut byte = [0];
+            while !headers.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+            }
+            let headers = String::from_utf8(headers).unwrap();
+            assert!(headers.starts_with("POST /chat/completions "));
+            let size: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse().unwrap())
+                })
+                .unwrap();
+            let mut body = vec![0; size];
+            socket.read_exact(&mut body).unwrap();
+            assert_eq!(String::from_utf8(body).unwrap(), expected);
+            let body = r#"{"error":{"message":"Images not supported by this model"}}"#;
+            write!(socket, "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            socket.flush().unwrap();
+            listener
+        });
+        let provider = ProviderConfig {
+            image_input: true,
+            id: "custom".into(),
+            name: "Custom".into(),
+            protocol: "openai_chat_completions".into(),
+            base_url,
+            api_key: String::new(),
+            api_key_storage: "plain_portable".into(),
+            model: "arbitrary-model".into(),
+            context_window: 8192,
+            max_output_tokens: 1024,
+            system_text: String::new(),
+            temperature: None,
+            raw_json_overrides: "{}".into(),
+            context_separator: String::new(),
+        };
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(super::stream_once(&provider, request_json, |_| Ok(())));
+        let error = result.err().unwrap().to_string();
+        assert!(error.contains("400 Bad Request"));
+        assert!(error.contains("Images not supported by this model"));
+        assert!(error.contains("Image input was included"));
+        let listener = server.join().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "failed image input must not trigger a retry"
+        );
     }
 
     #[test]

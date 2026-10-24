@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::db::{now_ms, Database};
 use crate::error::{AppError, AppResult};
-use crate::models::{Conversation, Message, Reasoning};
+use crate::models::{Conversation, ImageAttachment, Message, Reasoning};
 
 fn row_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
     Ok(Conversation {
@@ -21,6 +21,13 @@ fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         parent_id: row.get(2)?,
         role: row.get(3)?,
         content: row.get(4)?,
+        images: serde_json::from_str(&row.get::<_, String>(8)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
         include_next: row.get::<_, i64>(5)? != 0,
         created_at: row.get(6)?,
         reasoning: row
@@ -83,7 +90,7 @@ pub fn ensure_conversation(db: &Database) -> AppResult<Conversation> {
 pub fn get_messages(db: &Database, conversation_id: &str) -> AppResult<Vec<Message>> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json,images_json
              FROM messages WHERE conversation_id=?1 ORDER BY created_at ASC, id ASC",
         )?;
         let messages = stmt
@@ -96,7 +103,7 @@ pub fn get_messages(db: &Database, conversation_id: &str) -> AppResult<Vec<Messa
 pub fn get_message(db: &Database, id: &str) -> AppResult<Option<Message>> {
     db.with_conn(|conn| {
         Ok(conn.query_row(
-            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json FROM messages WHERE id=?1",
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json,images_json FROM messages WHERE id=?1",
             [id],
             row_message,
         ).optional()?)
@@ -121,6 +128,47 @@ pub fn insert_message_with_reasoning(
     content: &str,
     reasoning: Option<Reasoning>,
 ) -> AppResult<Message> {
+    insert_message_full(
+        db,
+        conversation_id,
+        parent_id,
+        role,
+        content,
+        reasoning,
+        &[],
+    )
+}
+
+pub fn insert_message_with_images(
+    db: &Database,
+    conversation_id: &str,
+    parent_id: Option<&str>,
+    role: &str,
+    content: &str,
+    images: &[ImageAttachment],
+) -> AppResult<Message> {
+    if images.is_empty() {
+        insert_message(db, conversation_id, parent_id, role, content)
+    } else {
+        insert_message_full(db, conversation_id, parent_id, role, content, None, images)
+    }
+}
+
+fn insert_message_full(
+    db: &Database,
+    conversation_id: &str,
+    parent_id: Option<&str>,
+    role: &str,
+    content: &str,
+    reasoning: Option<Reasoning>,
+    images: &[ImageAttachment],
+) -> AppResult<Message> {
+    crate::images::validate(images)?;
+    if role != "user" && !images.is_empty() {
+        return Err(AppError::Message(
+            "images can only be attached to user messages".into(),
+        ));
+    }
     if !matches!(role, "user" | "assistant") {
         return Err(AppError::Message("invalid message role".into()));
     }
@@ -142,6 +190,7 @@ pub fn insert_message_with_reasoning(
         role: role.to_string(),
         content: content.to_string(),
         reasoning,
+        images: images.to_vec(),
         include_next: true,
         created_at: now,
     };
@@ -149,8 +198,8 @@ pub fn insert_message_with_reasoning(
     db.with_conn_mut(|conn| {
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO messages(id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json) VALUES(?1,?2,?3,?4,?5,1,?6,?7)",
-            params![message.id, message.conversation_id, message.parent_id, message.role, message.content, message.created_at, message.reasoning.as_ref().map(serde_json::to_string).transpose()?],
+            "INSERT INTO messages(id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json,images_json) VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8)",
+            params![message.id, message.conversation_id, message.parent_id, message.role, message.content, message.created_at, message.reasoning.as_ref().map(serde_json::to_string).transpose()?, serde_json::to_string(&message.images)?],
         )?;
         tx.execute(
             "UPDATE conversations SET updated_at=?2 WHERE id=?1",
@@ -194,7 +243,7 @@ pub fn set_reasoning_part_included(
     db.with_conn_mut(|conn| {
         let tx = conn.transaction()?;
         let mut message = tx.query_row(
-            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json FROM messages WHERE id=?1",
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json,images_json FROM messages WHERE id=?1",
             [message_id], row_message,
         ).optional()?.ok_or_else(|| AppError::Message("message not found".into()))?;
         if message.role != "assistant" {
@@ -214,26 +263,54 @@ pub fn set_reasoning_part_included(
 }
 
 /// Editing creates a sibling; existing descendants and request snapshots stay intact.
+#[cfg(test)]
 pub fn edit_message(db: &Database, message_id: &str, content: &str) -> AppResult<Message> {
-    if content.trim().is_empty() {
-        return Err(AppError::Message("message content cannot be empty".into()));
-    }
+    edit_message_with_reasoning(db, message_id, content, None)
+}
+
+pub fn edit_message_with_reasoning(
+    db: &Database,
+    message_id: &str,
+    content: &str,
+    reasoning: Option<Reasoning>,
+) -> AppResult<Message> {
     db.with_conn_mut(|conn| {
         let tx = conn.transaction()?;
         let original = tx.query_row(
-            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json FROM messages WHERE id=?1",
+            "SELECT id,conversation_id,parent_id,role,content,include_next,created_at,reasoning_json,images_json FROM messages WHERE id=?1",
             [message_id], row_message,
         ).optional()?.ok_or_else(|| AppError::Message("message not found".into()))?;
-        if original.content == content {
+        let mut reasoning = reasoning.or_else(|| (original.content == content).then(|| original.reasoning.clone()).flatten());
+        if reasoning != original.reasoning {
+            if let Some(reasoning) = &mut reasoning {
+                reasoning.tokens = None;
+                reasoning.encrypted = false;
+                reasoning.edited = true;
+            }
+        }
+        if reasoning.as_ref().is_some_and(|r| r.parts.is_empty()) { reasoning = None; }
+        if reasoning.is_some() && original.role != "assistant" {
+            return Err(AppError::Message("reasoning requires an assistant message".into()));
+        }
+        if let Some(reasoning) = &reasoning {
+            let mut ids = std::collections::HashSet::new();
+            if reasoning.parts.iter().any(|p| p.id.is_empty() || !ids.insert(&p.id) || !matches!(p.kind.as_str(), "text" | "summary")) {
+                return Err(AppError::Message("invalid reasoning blocks".into()));
+            }
+        }
+        if content.trim().is_empty() && original.images.is_empty() && !reasoning.as_ref().is_some_and(|r| r.parts.iter().any(|p| !p.text.trim().is_empty())) {
+            return Err(AppError::Message("message content cannot be empty".into()));
+        }
+        if original.content == content && reasoning == original.reasoning {
             return Ok(original);
         }
         let edited = Message {
-            id: Uuid::new_v4().to_string(), content: content.to_string(), reasoning: None,
+            id: Uuid::new_v4().to_string(), content: content.to_string(), reasoning,
             created_at: now_ms(), ..original
         };
         tx.execute(
-            "INSERT INTO messages(id,conversation_id,parent_id,role,content,include_next,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![edited.id, edited.conversation_id, edited.parent_id, edited.role, edited.content, edited.include_next, edited.created_at],
+            "INSERT INTO messages(id,conversation_id,parent_id,role,content,include_next,created_at,images_json,reasoning_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![edited.id, edited.conversation_id, edited.parent_id, edited.role, edited.content, edited.include_next, edited.created_at, serde_json::to_string(&edited.images)?, edited.reasoning.as_ref().map(serde_json::to_string).transpose()?],
         )?;
         tx.execute("UPDATE conversations SET updated_at=?2 WHERE id=?1", params![edited.conversation_id, edited.created_at])?;
         tx.commit()?;
@@ -297,6 +374,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn raw_reasoning_edits_branch_and_preserve_original_history() {
+        let path =
+            std::env::temp_dir().join(format!("cerachat-edit-reasoning-{}.db", Uuid::new_v4()));
+        let db = Database::open(path.clone()).unwrap();
+        let chat = create_conversation(&db).unwrap();
+        let user = insert_message(&db, &chat.id, None, "user", "question").unwrap();
+        let reasoning: Reasoning = serde_json::from_value(serde_json::json!({"parts":[{"id":"r", "kind":"text", "text":"original", "include_next":true}], "tokens":42, "encrypted":false})).unwrap();
+        let original = insert_message_with_reasoning(
+            &db,
+            &chat.id,
+            Some(&user.id),
+            "assistant",
+            "answer",
+            Some(reasoning.clone()),
+        )
+        .unwrap();
+        let child = insert_message(&db, &chat.id, Some(&original.id), "user", "follow up").unwrap();
+        let mut draft = reasoning.clone();
+        draft.parts[0].text = "edited 日本語\n".into();
+        draft.replay_mode = crate::models::ReasoningReplayMode::Interleaved;
+        let edited = edit_message_with_reasoning(&db, &original.id, "", Some(draft)).unwrap();
+        assert_ne!(original.id, edited.id);
+        assert_eq!(edited.parent_id, original.parent_id);
+        assert!(edited.content.is_empty());
+        assert_eq!(
+            get_message(&db, &child.id)
+                .unwrap()
+                .unwrap()
+                .parent_id
+                .as_deref(),
+            Some(original.id.as_str())
+        );
+        assert_eq!(
+            get_message(&db, &original.id).unwrap().unwrap().reasoning,
+            Some(reasoning)
+        );
+        let edited_reasoning = edited.reasoning.clone().unwrap();
+        assert!(edited_reasoning.edited);
+        assert!(!edited_reasoning.encrypted);
+        assert_eq!(edited_reasoning.tokens, None);
+        assert_eq!(
+            edit_message_with_reasoning(&db, &edited.id, "", Some(edited_reasoning.clone()))
+                .unwrap()
+                .id,
+            edited.id
+        );
+        drop(db);
+        let db = Database::open(path.clone()).unwrap();
+        assert_eq!(
+            get_message(&db, &edited.id).unwrap().unwrap().reasoning,
+            Some(edited_reasoning)
+        );
+        assert!(
+            edit_message_with_reasoning(&db, &edited.id, "", Some(Reasoning::default())).is_err()
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn reasoning_survives_reopening_but_is_cleared_on_edited_branches() {
         let path =
             std::env::temp_dir().join(format!("cerachat-reasoning-{}.sqlite3", Uuid::new_v4()));
@@ -312,6 +449,7 @@ mod tests {
             }],
             tokens: Some(42),
             encrypted: true,
+            ..Default::default()
         };
         let reply = insert_message_with_reasoning(
             &db,

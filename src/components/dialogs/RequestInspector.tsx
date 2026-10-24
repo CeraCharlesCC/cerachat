@@ -30,6 +30,7 @@ export function RequestInspector({ preview, onClose }: { preview: RequestPreview
         <code className="min-w-0 truncate font-mono text-xs">{preview.request_sha256}</code>
         <Button variant="outline" size="sm" onClick={() => void navigator.clipboard?.writeText(preview.request_json)}>Copy JSON</Button>
       </div>
+      {b.image_count > 0 && <p className="text-xs text-muted-foreground">{b.image_count} image(s) included. Token estimates cover text only; image tokens depend on the service/model.</p>}
       <h3 className="mb-1.5 mt-0 text-xs font-semibold">Actual request JSON</h3>
       <pre className="scroll-stable max-h-[42dvh] overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/60 bg-muted/40 p-3 font-mono text-xs leading-5">{preview.request_json}</pre>
       <details className="mt-3">

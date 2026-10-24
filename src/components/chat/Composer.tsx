@@ -1,14 +1,23 @@
-import { ArrowUp, LoaderCircle, Square } from 'lucide-react'
-import { type KeyboardEvent, type RefObject } from 'react'
-import type { HistoryMode, Message } from '../../types'
+import { ArrowUp, ImagePlus, LoaderCircle, Square } from 'lucide-react'
+import { useRef, type KeyboardEvent, type RefObject } from 'react'
+import type { HistoryMode, Message, ImageAttachment } from '../../types'
 import { estimateTokens, formatTokens } from '../../lib/utils'
+import { IMAGE_INPUT_HELP } from '../../lib/images'
+import { ImageAttachments } from './ImageAttachments'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 
-export function Composer({ height, textareaRef, input, historyMode, sinceMessageId, path, historyTokens, workspaceTokens, canCompile, busy, streaming, stopping, editing, onInputChange, onHistoryModeChange, onSinceMessageChange, onPreview, onSend, onStop }: {
+export function Composer({ height, textareaRef, input, images, imageInputEnabled, imageWarning, imageCount, readingImages, onAddImages, onRemoveImage, historyMode, sinceMessageId, path, historyTokens, workspaceTokens, canCompile, busy, streaming, stopping, editing, onInputChange, onHistoryModeChange, onSinceMessageChange, onPreview, onSend, onStop }: {
   height: number
   textareaRef: RefObject<HTMLTextAreaElement>
   input: string
+  images: ImageAttachment[]
+  imageInputEnabled: boolean
+  imageWarning: string | null
+  imageCount: number
+  readingImages: boolean
+  onAddImages: (files: File[]) => void
+  onRemoveImage: (index: number) => void
   historyMode: HistoryMode
   sinceMessageId: string | null
   path: Message[]
@@ -26,10 +35,12 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
   onSend: () => void
   onStop: () => void
 }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const attachmentsDisabled = busy || streaming || editing || readingImages
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault()
-      onSend()
+      if (canCompile) onSend()
     }
   }
 
@@ -53,7 +64,14 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
           </select>
         </div>
 
-        <form aria-label="Send message" onSubmit={(event) => { event.preventDefault(); if (canCompile) onSend() }} className="flex min-h-0 flex-1 flex-col rounded-2xl border border-input bg-card p-2 shadow-sm transition-colors focus-within:border-ring">
+        {imageWarning && <p role="status" className="mb-2 max-h-16 shrink-0 overflow-auto text-xs text-destructive">{imageWarning}</p>}
+        <form onDragOver={(event) => {
+          if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = imageInputEnabled && !attachmentsDisabled ? 'copy' : 'none' }
+        }} onDrop={(event) => {
+          if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); if (!attachmentsDisabled) onAddImages(Array.from(event.dataTransfer.files)) }
+        }} aria-label="Send message" onSubmit={(event) => { event.preventDefault(); if (canCompile) onSend() }} className="flex min-h-0 flex-1 flex-col rounded-2xl border border-input bg-card p-2 shadow-sm transition-colors focus-within:border-ring">
+          <ImageAttachments images={images} disabled={attachmentsDisabled} onRemove={onRemoveImage} />
+          <input ref={fileRef} type="file" multiple accept="image/png,image/jpeg,image/webp" aria-label="Choose images" className="hidden" disabled={!imageInputEnabled || attachmentsDisabled} onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) onAddImages(files) }} />
           <textarea
             ref={textareaRef}
             className="scroll-stable block min-h-0 w-full flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2 text-[15px] leading-6 text-card-foreground outline-none placeholder:text-muted-foreground"
@@ -64,8 +82,13 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
             value={input}
             onChange={(event) => onInputChange(event.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files)
+              if (files.length) { event.preventDefault(); if (!attachmentsDisabled) onAddImages(files) }
+            }}
           />
           <div className="mt-1 flex shrink-0 items-end justify-between gap-2">
+            <IconButton type="button" aria-label="Attach images" title={imageInputEnabled ? 'Attach images · PNG, JPEG, WebP · up to 4 × 5 MiB' : IMAGE_INPUT_HELP} disabled={!imageInputEnabled || attachmentsDisabled || images.length >= 4} onClick={() => fileRef.current?.click()}>{readingImages ? <LoaderCircle size={16} className="animate-spin" /> : <ImagePlus size={16} />}</IconButton>
             <span className="min-w-0 truncate px-3 pb-2 text-xs tabular-nums text-muted-foreground" title={editing ? 'Finish editing the message above. Your unsent draft is kept here.' : `${input.length.toLocaleString()} characters`}>{editing ? 'Editing message · draft kept' : `${input.length.toLocaleString()} chars`}</span>
             <div className="flex items-center gap-1.5">
               <Button variant="ghost" size="sm" disabled={!canCompile} onClick={onPreview}>Preview</Button>
@@ -87,6 +110,7 @@ export function Composer({ height, textareaRef, input, historyMode, sinceMessage
             </div>
           </div>
         </form>
+        {imageCount > 0 && <p className="m-0 px-2 pt-1 text-[10px] text-muted-foreground">{imageCount} image(s) · token estimates cover text only</p>}
         <div className="mt-2 grid grid-cols-3 gap-2 px-2 text-[11px] tabular-nums text-muted-foreground" aria-label="Estimated tokens">
           {([['History', historyTokens], ['Context', workspaceTokens], ['Input', estimateTokens(input)]] as const).map(([label, tokens]) => (
             <span key={label} className="flex min-w-0 items-center justify-between gap-1">

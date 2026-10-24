@@ -2,7 +2,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { demoBootstrap, demoMessages, demoSourceLines } from './demo'
 import { estimateTokens } from './utils'
-import { historyContent } from './reasoning'
+import { auditHistory, editedReasoning, historyContent, historyMessage, interleaveHistory, interventionTool, wireHistory } from './reasoning'
+import { validateImages, MAX_REQUEST_IMAGE_URL_BYTES, IMAGE_INPUT_HELP } from './images'
 import { makeUniqueModelId, resolveProviderConfig, validateModel, validateProvider, validateProviderCatalog } from './catalog'
 import type {
   AddSliceArgs,
@@ -11,6 +12,7 @@ import type {
   ContextSlice,
   Conversation,
   Message,
+  Reasoning,
   ModelProfile,
   ProviderCatalog,
   ProviderConfig,
@@ -204,13 +206,15 @@ export async function deleteBranch(messageId: string): Promise<void> {
   await call('delete_branch', { messageId })
 }
 
-export async function editMessage(messageId: string, content: string): Promise<Message> {
-  if (isTauri()) return call<Message>('edit_message', { messageId, content })
+export async function editMessage(messageId: string, content: string, reasoning?: Reasoning | null): Promise<Message> {
+  if (isTauri()) return call<Message>('edit_message', { messageId, content, reasoning })
   const original = browserMessages.find((message) => message.id === messageId)
   if (!original) throw new Error('Message not found')
-  if (!content.trim()) throw new Error('Message content cannot be empty')
-  if (original.content === content) return structuredClone(original)
-  const edited = { ...original, id: crypto.randomUUID(), content, reasoning: null, created_at: Date.now() }
+  const nextReasoning = reasoning === undefined ? (original.content === content ? original.reasoning ?? null : null) : editedReasoning(original.reasoning, reasoning)
+  if (original.role !== 'assistant' && nextReasoning) throw new Error('Reasoning requires an assistant message')
+  if (!content.trim() && !original.images?.length && !nextReasoning?.parts.some((part) => part.text.trim())) throw new Error('Message content cannot be empty')
+  if (original.content === content && JSON.stringify(nextReasoning) === JSON.stringify(original.reasoning ?? null)) return structuredClone(original)
+  const edited = { ...original, id: crypto.randomUUID(), content, reasoning: nextReasoning, created_at: Date.now() }
   browserMessages.push(edited)
   return structuredClone(edited)
 }
@@ -465,20 +469,29 @@ export async function compileRequest(args: CompileRequestArgs): Promise<RequestP
   }
   const system = join([provider.system_text, join(parts.system)])
   const input = join([join(parts.before_current), args.input, join(parts.inside_current)])
-  if (!input) throw new Error('Request has no current user content')
-  const messages = [
-    ...(parts.before_history.length ? [{ role: 'user', content: join(parts.before_history) }] : []),
-    ...selected.map((message) => ({ role: message.role, content: historyContent(message) })),
-    { role: 'user', content: input },
-  ]
+  const images = args.images ?? []
+  validateImages(images)
+  const allImages = [...selected.flatMap((message) => message.images ?? []), ...images]
+  if (allImages.length && !provider.image_input) throw new Error(`${IMAGE_INPUT_HELP} Remove draft images and exclude image messages from history (Include next / No history). No request was sent.`)
+  if (allImages.reduce((sum, image) => sum + image.data_url.length, 0) > MAX_REQUEST_IMAGE_URL_BYTES) throw new Error('Too many image bytes in this request. Exclude older image messages from history or use No history.')
+  if (!input && !images.length) throw new Error('Request has no current user content')
+  const messages = interleaveHistory([
+    ...(parts.before_history.length ? [{ role: 'user', content: join(parts.before_history), images: [] }] : []),
+    ...selected.map(historyMessage),
+    { role: 'user', content: input, images },
+  ])
   const extra: unknown = JSON.parse(provider.raw_json_overrides || '{}')
   if (!isRecord(extra)) throw new Error('Raw JSON overrides must be a JSON object')
   const reserved = new Set(['model', 'messages', 'input', 'instructions', 'stream', 'max_tokens', 'max_completion_tokens', 'max_output_tokens', 'temperature', 'previous_response_id', 'conversation', 'prompt', 'background', 'tools', 'tool_choice', 'functions', 'function_call', 'functionDeclarations', 'parallel_tool_calls', 'web_search_options', 'mcp', 'plugins'])
   for (const key of Object.keys(extra)) if (reserved.has(key)) throw new Error(`Raw JSON override key '${key}' is reserved; request structure is controlled by CeraChat`)
+  const wireMessages = wireHistory(messages, provider.protocol)
+  const mockTools = messages.some((message) => message.intervention_call_id) ? {
+    tools: [provider.protocol === 'openai_responses' ? { type: 'function', ...interventionTool } : { type: 'function', function: interventionTool }], tool_choice: 'none',
+  } : {}
   const temperature = provider.temperature === null ? {} : { temperature: provider.temperature }
   const request = provider.protocol === 'openai_responses'
-    ? { ...extra, ...temperature, model: provider.model, ...(system ? { instructions: system } : {}), input: messages, stream: true, max_output_tokens: provider.max_output_tokens }
-    : { ...extra, ...temperature, model: provider.model, messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages], stream: true, max_completion_tokens: provider.max_output_tokens }
+    ? { ...extra, ...temperature, ...mockTools, model: provider.model, ...(system ? { instructions: system } : {}), input: wireMessages, stream: true, max_output_tokens: provider.max_output_tokens }
+    : { ...extra, ...temperature, ...mockTools, model: provider.model, messages: [...(system ? [{ role: 'system', content: system }] : []), ...wireMessages], stream: true, max_completion_tokens: provider.max_output_tokens }
   const requestJson = JSON.stringify(request, null, 2)
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(requestJson))
   const historyTokens = selected.reduce((sum, message) => sum + estimateTokens(historyContent(message)), 0)
@@ -491,9 +504,9 @@ export async function compileRequest(args: CompileRequestArgs): Promise<RequestP
   const inputTokens = estimateTokens(args.input)
   return {
     request_json: requestJson,
-    compiled_prompt: [...(system ? [`[system]\n${system}`] : []), ...messages.map((message) => `[${message.role}]\n${message.content}`)].join('\n\n'),
+    compiled_prompt: [...(system ? [`[system]\n${system}`] : []), ...messages.map(auditHistory)].join('\n\n'),
     request_sha256: Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join(''),
-    breakdown: { system_tokens: systemTokens, history_tokens: historyTokens, workspace_tokens: workspaceTokens, input_tokens: inputTokens, estimated_input_tokens: systemTokens + historyTokens + workspaceTokens + inputTokens, configured_context: provider.context_window, max_output_tokens: provider.max_output_tokens },
+    breakdown: { image_count: allImages.length, system_tokens: systemTokens, history_tokens: historyTokens, workspace_tokens: workspaceTokens, input_tokens: inputTokens, estimated_input_tokens: systemTokens + historyTokens + workspaceTokens + inputTokens, configured_context: provider.context_window, max_output_tokens: provider.max_output_tokens },
   }
 }
 
@@ -559,6 +572,7 @@ export async function sendMessage(args: CompileRequestArgs): Promise<string> {
     parent_id: args.parentId,
     role: 'user',
     content: args.input,
+    images: structuredClone(args.images ?? []),
     include_next: true,
     created_at: now,
   }
@@ -577,7 +591,7 @@ export async function regenerateResponse(args: RegenerateArgs): Promise<string> 
     throw new Error('The user message for this response is no longer available')
   }
 
-  await compileRequest({ conversationId: args.conversationId, parentId: user.parent_id, input: user.content, historyMode: args.historyMode, sinceMessageId: args.sinceMessageId })
+  await compileRequest({ conversationId: args.conversationId, parentId: user.parent_id, input: user.content, images: user.images, historyMode: args.historyMode, sinceMessageId: args.sinceMessageId })
 
   const text = 'This is a locally simulated regenerated response. The desktop build reuses the selected user message, sends one new provider request, and stores the result as a sibling branch.'
   return startBrowserStream(user, text, false)

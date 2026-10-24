@@ -1,18 +1,18 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { StreamPayload } from '../src/types'
 
-async function openWithStream(page: Page) {
-  await page.addInitScript(() => {
+async function openWithStream(page: Page, protocol: 'openai_responses' | 'openai_chat_completions' = 'openai_responses') {
+  await page.addInitScript((protocol) => {
     if (!localStorage.getItem('cerachat.provider-catalog.v1')) localStorage.setItem('cerachat.provider-catalog.v1', JSON.stringify({
       version: 1,
       settings: {
-        providers: [{ id: 'local', name: 'Local', protocol: 'openai_responses', base_url: 'https://unused.invalid/v1', api_key_storage: 'plain_portable', system_text: '', temperature: null, raw_json_overrides: '{"reasoning":{"effort":"high"},"store":false}', context_separator: '\n---\n' }],
+        providers: [{ id: 'local', name: 'Local', protocol, base_url: 'https://unused.invalid/v1', api_key_storage: 'plain_portable', system_text: '', temperature: null, raw_json_overrides: '{"reasoning":{"effort":"high"},"store":false}', context_separator: '\n---\n' }],
         models: [{ provider_id: 'local', model_id: 'test', name: 'Test', context_window: 128000, max_output_tokens: 1024 }],
         selected_model_id: 'local::test',
       },
       secrets: { api_keys: { local: '' } },
     }))
-  })
+  }, protocol)
   // Feed provider events through the same subscription and store used by the app.
   // This hook exists only in the test response, never in production code.
   await page.route('**/src/lib/backend.ts*', async (route) => {
@@ -90,7 +90,7 @@ test('includes checked reasoning blocks in previews and the next send, and remem
   await summary.check()
   await expect(summary).toBeChecked()
   await expect(summary).toBeEnabled()
-  await expect(panel).toContainText('labeled assistant text')
+  await expect(panel).toContainText('Native raw')
   await page.getByRole('button', { name: 'Large log review', exact: true }).click()
   await page.getByRole('button', { name: 'Deterministic request architecture', exact: true }).click()
   await panel.locator('summary').click()
@@ -130,7 +130,8 @@ test('includes checked reasoning blocks in previews and the next send, and remem
   await expect.poll(() => page.evaluate(() => (window as unknown as { __lastBrowserRequest?: { request_json: string } }).__lastBrowserRequest?.request_json ?? '')).toContain('Optional reasoning steps')
   const sent = await page.evaluate(() => (window as unknown as { __lastBrowserRequest: { request_json: string } }).__lastBrowserRequest.request_json)
   expect(sent).not.toContain('Selected summary 日本語')
-  expect(sent).toContain('[Selected reasoning text]')
+  expect(sent).not.toContain('[Selected reasoning text]')
+  expect(JSON.parse(sent).input.some((item: { type?: string; content?: { type: string; text: string }[] }) => item.type === 'reasoning' && item.content?.[0].text === 'Optional reasoning steps')).toBe(true)
   await expect(messages.locator('details[aria-label="Response reasoning"]').last()).toContainText('Browser demo')
 })
 
@@ -192,3 +193,64 @@ test('summary setting preserves other overrides, survives reload, and appears in
   expect(JSON.parse(raw!).reasoning).toEqual({ effort: 'high', summary: 'auto' })
   expect(external).toEqual([])
 })
+
+
+for (const protocol of ['openai_chat_completions', 'openai_responses'] as const) {
+  test(`${protocol}: edits raw reasoning as a branch and pairs the next intervention without quoting it`, async ({ page }) => {
+    await openWithStream(page, protocol)
+    await emit(page, { ...request, kind: 'started', user_message: { id: 'raw-user', conversation_id: 'demo-chat', parent_id: 'a2-alt', role: 'user', content: 'Work on the draft', include_next: true, created_at: 1 } })
+    await emit(page, { ...request, kind: 'done', assistant_message: {
+      id: 'raw-answer', conversation_id: 'demo-chat', parent_id: 'raw-user', role: 'assistant', content: 'Original answer', include_next: true, created_at: 2,
+      reasoning: { parts: [{ id: 'raw', kind: 'text', text: '  First plan\n日本語\n', include_next: true }], tokens: 42, encrypted: false },
+    } })
+    const messages = page.getByRole('region', { name: 'Conversation messages' })
+    const original = messages.getByRole('article', { name: 'Assistant message' }).filter({ hasText: 'Original answer' })
+    await original.locator('details[aria-label="Response reasoning"] summary').click()
+    await original.getByRole('button', { name: 'Edit reasoning', exact: true }).click()
+    const editor = page.getByRole('form', { name: 'Edit message' })
+    await editor.getByRole('textbox', { name: 'Edited reasoning block 1', exact: true }).fill('  Revised plan\n日本語\n')
+    // A reasoning-only checkpoint is a useful mid-thought intervention point.
+    await editor.getByRole('textbox', { name: 'Edited message', exact: true }).fill('')
+    await editor.getByRole('combobox', { name: 'Reasoning replay', exact: true }).selectOption('interleaved')
+    await editor.getByRole('button', { name: 'Save as new branch', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    const panel = messages.locator('details[aria-label="Response reasoning"]').last()
+    await panel.locator('summary').click()
+    await expect(panel).toContainText('Interleaved mock · edited')
+    await expect(panel).not.toContainText('42 tokens')
+    await page.getByRole('textbox', { name: 'Message input', exact: true }).fill('Use the other approach')
+    await page.getByRole('button', { name: 'Preview', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: 'Request preview' })
+    const raw = JSON.parse((await preview.locator('pre').first().textContent())!)
+    expect(raw.tool_choice).toBe('none')
+    expect(JSON.stringify(raw)).not.toContain('Selected reasoning text')
+    expect(JSON.stringify(raw)).not.toContain('Original answer')
+    if (protocol === 'openai_chat_completions') {
+      const checkpoint = raw.messages.find((item: { tool_calls?: unknown }) => item.tool_calls)
+      expect(checkpoint.content).toBe('')
+      expect(checkpoint.reasoning_content).toBe('  Revised plan\n日本語\n')
+      const result = raw.messages.find((item: { role: string }) => item.role === 'tool')
+      expect(result.tool_call_id).toBe(checkpoint.tool_calls[0].id)
+      expect(result.content.endsWith('Use the other approach')).toBe(true)
+      expect(result.content).toContain('deterministic local context content')
+      expect(JSON.stringify(raw).split('Use the other approach')).toHaveLength(2)
+      expect(raw.messages.at(-1)).toEqual(result)
+    } else {
+      const checkpoint = raw.input.find((item: { type: string }) => item.type === 'function_call')
+      const result = raw.input.find((item: { type: string }) => item.type === 'function_call_output')
+      expect(raw.input.find((item: { type: string }) => item.type === 'reasoning').content[0].text).toBe('  Revised plan\n日本語\n')
+      expect(result.call_id).toBe(checkpoint.call_id)
+      expect(result.output.endsWith('Use the other approach')).toBe(true)
+      expect(result.output).toContain('deterministic local context content')
+      expect(JSON.stringify(raw).split('Use the other approach')).toHaveLength(2)
+      expect(raw.input.at(-1)).toEqual(result)
+    }
+    await preview.getByRole('button', { name: 'Close', exact: true }).click()
+    // The original branch still contains its untouched answer and raw reasoning.
+    await messages.getByRole('article', { name: 'Assistant message' }).last().getByRole('button', { name: 'Previous branch', exact: true }).click()
+    await expect(original).toBeVisible()
+    await original.locator('details[aria-label="Response reasoning"] summary').click()
+    await expect(original).toContainText('First plan')
+    await expect(original).not.toContainText('Revised plan')
+  })
+}

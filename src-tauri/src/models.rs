@@ -16,16 +16,38 @@ pub struct Message {
     pub role: String,
     pub content: String,
     #[serde(default)]
+    pub images: Vec<ImageAttachment>,
+    #[serde(default)]
     pub reasoning: Option<Reasoning>,
     pub include_next: bool,
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageAttachment {
+    pub name: String,
+    pub data_url: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Reasoning {
+    #[serde(default)]
+    pub replay_mode: ReasoningReplayMode,
+    #[serde(default)]
+    pub edited: bool,
     pub parts: Vec<ReasoningPart>,
     pub tokens: Option<u64>,
     pub encrypted: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningReplayMode {
+    #[default]
+    Native,
+    Interleaved,
+    Text,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -57,6 +79,7 @@ impl Reasoning {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderConfig {
+    pub image_input: bool,
     pub id: String,
     pub name: String,
     pub protocol: String,
@@ -87,6 +110,8 @@ pub struct ProviderProfile {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
+    #[serde(default)]
+    pub image_input: bool,
     pub provider_id: String,
     pub model_id: String,
     pub name: String,
@@ -143,6 +168,7 @@ pub struct SourceLines {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestBreakdown {
+    pub image_count: usize,
     pub system_tokens: u64,
     pub history_tokens: u64,
     pub workspace_tokens: u64,
@@ -184,6 +210,8 @@ pub struct StreamPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileRequestArgs {
+    #[serde(default)]
+    pub images: Vec<ImageAttachment>,
     pub conversation_id: String,
     pub parent_id: Option<String>,
     pub input: String,
@@ -223,6 +251,10 @@ pub struct UpdateSliceArgs {
 
 #[derive(Debug, Clone)]
 pub struct CanonicalMessage {
+    pub reasoning_content: Option<String>,
+    // Only used for the local interleaving mock, never an executable tool.
+    pub intervention_call_id: Option<String>,
+    pub images: Vec<ImageAttachment>,
     pub role: String,
     pub content: String,
 }

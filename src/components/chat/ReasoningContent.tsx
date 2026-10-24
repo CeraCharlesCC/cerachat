@@ -1,10 +1,11 @@
 import type { Reasoning } from '../../types'
 import { MarkdownContent } from './MarkdownContent'
 
-export function ReasoningContent({ reasoning, disabled = true, messageIncluded = true, onIncludedChange }: {
+export function ReasoningContent({ reasoning, disabled = true, messageIncluded = true, onIncludedChange, onEdit }: {
   reasoning?: Reasoning | null
   disabled?: boolean
   messageIncluded?: boolean
+  onEdit?: () => void
   onIncludedChange?: (partId: string, included: boolean) => void
 }) {
   if (!reasoning || (!reasoning.parts.length && reasoning.tokens === null && !reasoning.encrypted)) return null
@@ -16,7 +17,12 @@ export function ReasoningContent({ reasoning, disabled = true, messageIncluded =
         {reasoning.tokens !== null && <> <span className="ml-2 text-xs tabular-nums">{reasoning.tokens.toLocaleString()} tokens</span></>}
       </summary>
       <div className="space-y-3 border-t border-border/70 px-3 py-3">
-        {reasoning.parts.length > 0 && <p className="m-0 text-xs">Checked blocks are sent as labeled assistant text in later requests when this message is included in history.</p>}
+        {reasoning.parts.length > 0 && <p className="m-0 text-xs">Checked raw blocks use Native raw by default. Choose a replay mode or edit blocks with Edit reasoning.</p>}
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <span>Replay: {reasoning.replay_mode === 'interleaved' ? 'Interleaved mock' : reasoning.replay_mode === 'text' ? 'Assistant notes' : 'Native raw'}{reasoning.edited ? ' · edited' : ''}</span>
+          {onEdit && <button type="button" className="rounded border border-border px-2 py-1 hover:bg-muted" disabled={disabled} onClick={onEdit}>Edit reasoning</button>}
+        </div>
+        {reasoning.replay_mode === 'interleaved' && <p className="m-0 text-xs">The next text intervention is sent as a paired tool result to continue this turn. This is an experimental mock.</p>}
         {reasoning.parts.map((part) => (
           <div key={part.id}>
             <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-xs">

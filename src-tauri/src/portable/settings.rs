@@ -91,6 +91,7 @@ impl VersionedSettingsFile {
                             AppError::Message("legacy model references an unknown provider".into())
                         })?;
                     models.push(ModelProfile {
+                        image_input: false,
                         provider_id: model.provider_id,
                         model_id: model.model_id,
                         name: model.name,
@@ -424,6 +425,7 @@ fn resolve_active(loaded: LoadedCatalog) -> AppResult<ProviderConfig> {
     })?;
 
     Ok(ProviderConfig {
+        image_input: model.image_input,
         id: provider.id.clone(),
         name: provider.name.clone(),
         protocol: provider.protocol.clone(),
@@ -844,6 +846,7 @@ mod tests {
     }
     fn model(provider_id: &str, model_id: &str) -> ModelProfile {
         ModelProfile {
+            image_input: false,
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             name: format!("Model {model_id}"),
@@ -964,6 +967,28 @@ mod tests {
     }
 
     #[test]
+    fn image_input_defaults_off_for_old_settings_and_persists_per_model() {
+        let (dir, store) = configured_store();
+        let path = dir.0.join(SETTINGS_FILE);
+        let mut old: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old["models"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("image_input");
+        let bytes = serde_json::to_vec(&old).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(!store.load_active_provider().unwrap().image_input);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let mut vision = model("alpha", "one");
+        vision.image_input = true;
+        store.save_model(vision).unwrap();
+        assert!(store.load_active_provider().unwrap().image_input);
+        store.save_model(model("alpha", "two")).unwrap();
+        store.select_model("alpha::two").unwrap();
+        assert!(!store.load_active_provider().unwrap().image_input);
+    }
+
+    #[test]
     fn legacy_parameters_inherit_per_model_without_rewriting_until_save() {
         let (dir, store) = configured_store();
         store.save_model(model("alpha", "two")).unwrap();
@@ -974,6 +999,7 @@ mod tests {
         legacy["providers"][0]["raw_json_overrides"] =
             Value::String(r#"{"reasoning":{"effort":"high"},"store":false}"#.into());
         for model in legacy["models"].as_array_mut().unwrap() {
+            model.as_object_mut().unwrap().remove("image_input");
             model.as_object_mut().unwrap().remove("temperature");
             model.as_object_mut().unwrap().remove("raw_json_overrides");
         }
@@ -1312,6 +1338,7 @@ mod tests {
                 &db,
                 &resolved,
                 &CompileRequestArgs {
+                    images: Vec::new(),
                     conversation_id: conversation.id,
                     parent_id: None,
                     input: "test input".into(),

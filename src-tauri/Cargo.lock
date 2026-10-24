@@ -328,6 +328,7 @@ dependencies = [
 name = "cerachat"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chardetng",
  "encoding_rs",
  "futures-util",

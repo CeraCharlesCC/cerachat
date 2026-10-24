@@ -1,6 +1,7 @@
 mod context;
 mod db;
 mod error;
+mod images;
 mod models;
 mod portable;
 mod providers;
@@ -226,8 +227,10 @@ fn edit_message(
     state: State<'_, AppState>,
     message_id: String,
     content: String,
+    reasoning: Option<models::Reasoning>,
 ) -> Result<models::Message, String> {
-    db::chat::edit_message(&state.db, &message_id, &content).map_err(command_error)
+    db::chat::edit_message_with_reasoning(&state.db, &message_id, &content, reasoning)
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -397,12 +400,13 @@ async fn send_message(
         .map_err(command_error)?;
     let compiled =
         context::compiler::compile(&state.db, &provider, &args).map_err(command_error)?;
-    let user_message = db::chat::insert_message(
+    let user_message = db::chat::insert_message_with_images(
         &state.db,
         &args.conversation_id,
         args.parent_id.as_deref(),
         "user",
         &args.input,
+        &args.images,
     )
     .map_err(command_error)?;
     start_provider_request(
@@ -430,6 +434,7 @@ async fn regenerate_response(
     }
 
     let compile_args = CompileRequestArgs {
+        images: user_message.images.clone(),
         conversation_id: args.conversation_id.clone(),
         parent_id: user_message.parent_id.clone(),
         input: user_message.content.clone(),
