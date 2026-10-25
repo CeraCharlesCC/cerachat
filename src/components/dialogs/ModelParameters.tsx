@@ -45,12 +45,12 @@ function ParameterInput({ parameter, value, disabled, onChange }: {
   const id = useId()
   const [draft, setDraft] = useState<{ source: unknown; text: string } | null>(null)
   if (typeof parameter.initial === 'boolean') return (
-    <select className="field" aria-label={parameter.label} disabled={disabled} value={String(value ?? parameter.initial)} onChange={(event) => onChange(event.target.value === 'true')}>
+    <select className="field disabled:bg-muted/30 disabled:text-muted-foreground" aria-label={parameter.label} disabled={disabled} value={String(value ?? parameter.initial)} onChange={(event) => onChange(event.target.value === 'true')}>
       <option value="false">False</option><option value="true">True</option>
     </select>
   )
   return <>
-    <input className="field" aria-label={parameter.label} disabled={disabled} type={typeof parameter.initial === 'number' ? 'number' : 'text'}
+    <input className="field disabled:bg-muted/30 disabled:text-muted-foreground" aria-label={parameter.label} disabled={disabled} type={typeof parameter.initial === 'number' ? 'number' : 'text'}
       min={parameter.min} max={parameter.max} step={parameter.step ?? 'any'} list={parameter.choices ? id : undefined}
       value={draft && draft.source === value ? draft.text : String(value ?? parameter.initial)} onBlur={() => setDraft(null)} onChange={(event) => {
         const text = event.target.value
@@ -106,11 +106,11 @@ export function ModelParameters({ model, protocol, onChange }: {
     } catch (reason) { setEditError(reason instanceof Error ? reason.message : String(reason)) }
   }
 
-  return <section className="col-span-2 min-w-0 border-t border-border/70 pt-3 max-sm:col-span-1" aria-label="Model request parameters">
-    <h4 className="m-0 text-xs font-semibold">Request parameters</h4>
-    <p className="mb-3 mt-1 text-xs leading-5 text-muted-foreground">Off omits the parameter and uses the API default. Support and accepted values depend on the model. Suggestions allow custom values. Controls and raw JSON stay in sync.</p>
+  return <section className="col-span-2 min-w-0 max-sm:col-span-1" aria-label="Model request parameters">
+    <h4 className="m-0 text-sm font-medium">Request parameters</h4>
+    <p className="mb-3 mt-1 text-xs leading-5 text-muted-foreground">Enable a parameter to override the API default. Accepted values depend on the model. Controls and raw JSON stay in sync.</p>
     <div className="grid min-w-0 grid-cols-2 gap-3 max-sm:grid-cols-1">
-      <div className="min-w-0">
+      <div className="min-w-0 rounded-xl border border-border/70 p-3">
         <div className="mb-1 flex items-center justify-between gap-2"><span className="text-xs font-medium">Temperature</span>
           <button type="button" role="switch" aria-label="Enable Temperature" aria-checked={model.temperature !== null} className={`rounded px-2 py-0.5 text-xs ${model.temperature !== null ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`} onClick={() => {
             if (model.temperature !== null) setRemembered((values) => ({ ...values, temperature: model.temperature }))
@@ -124,7 +124,7 @@ export function ModelParameters({ model, protocol, onChange }: {
         const key = parameter.path.join('.')
         const value = readPath(overrides, parameter.path)
         const enabled = value !== undefined
-        return <div className="min-w-0" key={key}>
+        return <div className="min-w-0 rounded-xl border border-border/70 p-3" key={key}>
           <div className="mb-1 flex items-center justify-between gap-2"><span className="text-xs font-medium">{parameter.label}</span>
             <button type="button" role="switch" aria-label={`Enable ${parameter.label}`} aria-checked={enabled} disabled={!!parseError} className={`rounded px-2 py-0.5 text-xs disabled:opacity-50 ${enabled ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`} onClick={() => {
               if (enabled) setRemembered((values) => ({ ...values, [key]: value }))
