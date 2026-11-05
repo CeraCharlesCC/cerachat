@@ -38,6 +38,8 @@ cargo tauri dev
 
 The [package scripts](package.json) and [CI workflow](.github/workflows/ci.yml) define the checks and build process, including Windows portable artifacts. Consult the workflow result rather than assuming a build artifact is a release.
 
+For `npm run test:e2e`, install or update Google Chrome Stable. Tests reuse system Chrome with Chromium sandboxing enabled; no bundled browser download is needed. Run as a non-root user on a host that supports the sandbox. `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can select another up-to-date Chrome executable.
+
 ## Where behavior is defined
 
 Treat implementation and tests as the source of truth for behavior, not this README. Request compilation and API payload construction live in [`src-tauri/src/context/compiler.rs`](src-tauri/src/context/compiler.rs); provider transport lives in [`src-tauri/src/providers/`](src-tauri/src/providers/). Local storage and migrations live in [`src-tauri/src/db/`](src-tauri/src/db/) and [`src-tauri/src/portable/`](src-tauri/src/portable/). The frontend and browser simulator live in [`src/`](src/). [Rust tests](src-tauri/src/) and [end-to-end tests](tests/) capture the observable contracts.

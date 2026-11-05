@@ -22,13 +22,6 @@ jobs:
     name: Frontend checks
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    strategy:
-      matrix:
-        # Keep this equal to playwright-core in package-lock.json.
-        playwright: ['1.63.0']
-    container:
-      image: mcr.microsoft.com/playwright:v${{ matrix.playwright }}-noble
-      options: --ipc=host
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,19 +35,6 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Verify Playwright image matches lockfile
-        env:
-          PLAYWRIGHT_IMAGE_VERSION: ${{ matrix.playwright }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
-          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
-          const version = lock.packages['node_modules/playwright-core'].version;
-          if (version !== process.env.PLAYWRIGHT_IMAGE_VERSION) {
-            throw new Error(`Playwright ${version} requires updating the frontend job's playwright matrix version to match.`);
-          }
-          NODE
-
       - name: Install frontend dependencies
         run: npm ci --no-audit --no-fund
 
@@ -63,6 +43,10 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+      # Run as the runner user so Chromium's sandbox can stay enabled.
+      - name: Update system Chrome
+        run: npx playwright install --with-deps --force chrome
 
       - name: Test chat, context, and catalog workflows
         run: npm run test:e2e
