@@ -14,6 +14,7 @@ playwright-report
 test-results
 /src-tauri/target/
 /src-tauri/gen/
+/tempdocs/
 *.local
 /AGENT.local.md
 
