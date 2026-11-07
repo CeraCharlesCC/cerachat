@@ -11,12 +11,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@bokuweb/zstd-wasm": "^0.0.27",
+    "@sqlite.org/sqlite-wasm": "^3.54.1-build1",
     "@tanstack/react-virtual": "^3.14.10",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.3",
-    "dompurify": "^3.4.14",
+    "dompurify": "^3.4.17",
+    "fflate": "^0.8.3",
     "lucide-react": "^1.41.0",
-    "markdown-it": "^14.3.1",
+    "markdown-it": "^14.3.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

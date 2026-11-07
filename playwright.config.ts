@@ -18,6 +18,9 @@ export default defineConfig({
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173 --strictPort',
     url: 'http://127.0.0.1:4173',
-    reuseExistingServer: !env.CI,
+    // Only the test server seeds the deterministic SQLite fixtures. Never reuse
+    // an unrelated dev server which may be using an unseeded database.
+    env: { VITE_CERACHAT_TEST_FIXTURES: 'true' },
+    reuseExistingServer: false,
   },
 })

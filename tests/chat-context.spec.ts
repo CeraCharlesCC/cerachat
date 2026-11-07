@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { Message } from '../src/types'
+import { installMockBrowserProvider } from './helpers/browser-provider'
 
 async function browserBackendUrl(page: Page): Promise<string> {
   return page.evaluate(() => {
@@ -17,12 +18,13 @@ async function browserMessages(page: Page, url?: string): Promise<Message[]> {
 }
 
 async function openWithModel(page: Page) {
+  await installMockBrowserProvider(page)
   await page.addInitScript(() => {
     localStorage.setItem('cerachat.provider-catalog.v1', JSON.stringify({
-      version: 1,
+      version: 2,
       settings: {
-        providers: [{ id: 'local', name: 'Local', protocol: 'openai_chat_completions', base_url: 'https://unused.invalid/v1', api_key_storage: 'plain_portable', system_text: '', temperature: null, raw_json_overrides: '{}', context_separator: '\n---\n' }],
-        models: [{ provider_id: 'local', model_id: 'test', name: 'Test', context_window: 128000, max_output_tokens: 1024 }],
+        providers: [{ id: 'local', name: 'Local', protocol: 'openai_chat_completions', base_url: 'https://unused.invalid/v1', api_key_storage: 'plain_portable', system_text: '', context_separator: '\n---\n' }],
+        models: [{ provider_id: 'local', model_id: 'test', name: 'Test', context_window: 128000, max_output_tokens: 1024, temperature: null, raw_json_overrides: '{}' }],
         selected_model_id: 'local::test',
       },
       secrets: { api_keys: { local: '' } },
@@ -151,6 +153,7 @@ test('editing a user inline creates a sibling, preserves descendants, and genera
   await page.getByRole('button', { name: 'Generate response', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
   await expect(page.getByRole('main').locator('article')).toHaveCount(2)
+  await expect.poll(async () => (await browserMessages(page)).length).toBe(before.length + 2)
   const generated = await browserMessages(page)
   expect(generated).toHaveLength(before.length + 2)
   expect(generated.filter((message) => message.content === edited.content)).toHaveLength(1)

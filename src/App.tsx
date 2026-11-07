@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { PanelLeft, PanelRight, Settings, X } from 'lucide-react'
+import { DatabaseBackup, PanelLeft, PanelRight, Settings, X } from 'lucide-react'
 import { ChatThread } from './components/chat/ChatThread'
 import { Composer } from './components/chat/Composer'
 import { ContextSidebar } from './components/context/ContextSidebar'
 import { ProviderSettings } from './components/dialogs/ProviderSettings'
+import { BrowserBackupDialog } from './components/dialogs/BrowserBackupDialog'
 import { RequestInspector } from './components/dialogs/RequestInspector'
 import { TextSourceDialog } from './components/dialogs/TextSourceDialog'
 import { ReferenceSourceDialog } from './components/dialogs/ReferenceSourceDialog'
@@ -94,6 +95,7 @@ export default function App() {
   const [readingImages, setReadingImages] = useState(false)
   const [preview, setPreview] = useState<RequestPreview | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [backupOpen, setBackupOpen] = useState(false)
   const [viewerSource, setViewerSource] = useState<WorkspaceSource | null>(null)
   const [editingMessage, setEditingMessage] = useState<Message | null>(null)
   const [pasteOpen, setPasteOpen] = useState(false)
@@ -218,7 +220,13 @@ export default function App() {
         void refreshBootstrap().catch((reason) => setError(String(reason)))
       } else if (payload.kind === 'error') {
         setError(payload.error ?? 'Provider request failed')
-        if (restoreLeafOnErrorRef.current) setActiveLeafId(restoreLeafOnErrorRef.current)
+        if (payload.assistant_message) {
+          // A failed streaming request can still have a durable partial reply.
+          setMessages((current) => [...current.filter((message) => message.id !== payload.assistant_message?.id), payload.assistant_message as Message])
+          setActiveLeafId(payload.assistant_message.id)
+        } else if (restoreLeafOnErrorRef.current) {
+          setActiveLeafId(restoreLeafOnErrorRef.current)
+        }
         restoreLeafOnErrorRef.current = null
         setStreaming(null)
         void refreshBootstrap().catch((reason) => setError(String(reason)))
@@ -503,6 +511,7 @@ export default function App() {
             {compactLayout && <Button variant="outline" size="sm" aria-expanded={contextOpen} aria-controls="context-panel" onClick={toggleContext}>Context</Button>}
             {!compactLayout && <IconButton aria-label="Toggle context panel" aria-expanded={contextOpen} aria-controls="context-panel" title="Toggle context panel" onClick={toggleContext}><PanelRight size={18} /></IconButton>}
             <IconButton aria-label="Provider settings" title="Provider settings" onClick={() => setSettingsOpen(true)}><Settings size={16} /></IconButton>
+            {!isTauri() && <IconButton aria-label="Backups and storage" title="Backups and storage" onClick={() => setBackupOpen(true)}><DatabaseBackup size={16} /></IconButton>}
             <div className="flex w-28 flex-col items-end overflow-hidden px-1 py-1.5 tabular-nums max-sm:hidden">
               <span className="text-[11px] font-semibold">{formatTokens(historyTokens + workspaceTokens + estimateTokens(input))} input</span>
               <small className="text-[9px] text-muted-foreground">{formatTokens(workspaceTokens)} workspace</small>
@@ -646,6 +655,7 @@ export default function App() {
       />
 
       {settingsOpen && <ProviderSettings catalog={state.provider_catalog} onClose={() => setSettingsOpen(false)} onCatalogChange={updateCatalog} />}
+      {!isTauri() && backupOpen && <BrowserBackupDialog catalog={state.provider_catalog} disabled={busy || Boolean(streaming)} onClose={() => setBackupOpen(false)} />}
       {preview && <RequestInspector preview={preview} onClose={() => setPreview(null)} />}
       {referenceOpen && conversationId && <ReferenceSourceDialog
         sources={state.sources.filter((source) => source.conversation_id !== conversationId)}

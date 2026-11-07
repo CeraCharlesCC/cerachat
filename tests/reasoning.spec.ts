@@ -1,47 +1,67 @@
 import { expect, test, type Page } from '@playwright/test'
-import type { StreamPayload } from '../src/types'
+import {
+  installMockBrowserProvider, mockBrowserRequests, mockNextBrowserResponses,
+  type MockProviderPlan, type MockSseEvent,
+} from './helpers/browser-provider'
 
 async function openWithStream(page: Page, protocol: 'openai_responses' | 'openai_chat_completions' = 'openai_responses') {
+  await installMockBrowserProvider(page)
   await page.addInitScript((protocol) => {
     if (!localStorage.getItem('cerachat.provider-catalog.v1')) localStorage.setItem('cerachat.provider-catalog.v1', JSON.stringify({
-      version: 1,
+      version: 2,
       settings: {
-        providers: [{ id: 'local', name: 'Local', protocol, base_url: 'https://unused.invalid/v1', api_key_storage: 'plain_portable', system_text: '', temperature: null, raw_json_overrides: '{"reasoning":{"effort":"high"},"store":false}', context_separator: '\n---\n' }],
-        models: [{ provider_id: 'local', model_id: 'test', name: 'Test', context_window: 128000, max_output_tokens: 1024 }],
+        providers: [{ id: 'local', name: 'Local', protocol, base_url: 'https://unused.invalid/v1', api_key_storage: 'plain_portable', system_text: '', context_separator: '\n---\n' }],
+        models: [{ provider_id: 'local', model_id: 'test', name: 'Test', context_window: 128000, max_output_tokens: 1024, temperature: null, raw_json_overrides: '{"reasoning":{"effort":"high"},"store":false}' }],
         selected_model_id: 'local::test',
       },
       secrets: { api_keys: { local: '' } },
     }))
   }, protocol)
-  // Feed provider events through the same subscription and store used by the app.
-  // This hook exists only in the test response, never in production code.
-  await page.route('**/src/lib/backend.ts*', async (route) => {
-    const response = await route.fetch()
-    const source = (await response.text()).replaceAll('await compileRequest(args);', 'window.__lastBrowserRequest = await compileRequest(args);')
-    await route.fulfill({ response, body: `${source}\nwindow.__emitReasoning = (payload) => {
-      if (payload.user_message) browserMessages.push(payload.user_message);
-      if (payload.assistant_message) browserMessages.push(payload.assistant_message);
-      emitBrowser(payload);
-    };` })
-  })
   await page.goto('/')
   await expect(page.getByRole('main').getByRole('button', { name: 'Test' }).first()).toBeVisible()
-  await page.waitForFunction(() => '__emitReasoning' in window)
 }
 
-async function emit(page: Page, payload: StreamPayload) {
-  await page.evaluate((event) => {
-    (window as unknown as { __emitReasoning: (event: StreamPayload) => void }).__emitReasoning(event)
-  }, payload)
+async function sendMockAnswer(page: Page, prompt: string, answer: string, plan: MockProviderPlan): Promise<void> {
+  await mockNextBrowserResponses(page, plan)
+  await page.getByRole('textbox', { name: 'Message input', exact: true }).fill(prompt)
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  await expect(page.getByText(answer, { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
 }
 
-const request = { request_id: 'reasoning-test', conversation_id: 'demo-chat' }
+function reasoningPlan(protocol: 'openai_responses' | 'openai_chat_completions', answer: string, raw: string, summary = '', tokens = 42, encrypted = false): MockProviderPlan {
+  const events: MockSseEvent[] = protocol === 'openai_responses' ? [
+    ...(summary ? [{ data: { type: 'response.reasoning_summary_text.delta', item_id: 'rs', summary_index: 0, delta: summary } }] : []),
+    ...(raw ? [{ data: { type: 'response.reasoning_text.delta', item_id: 'rs', content_index: 0, delta: raw } }] : []),
+    { data: { type: 'response.output_text.delta', delta: answer } },
+    { data: { type: 'response.completed', response: {
+      output: [{ id: 'rs', type: 'reasoning', ...(encrypted ? { encrypted_content: 'opaque-ciphertext' } : {}) }],
+      usage: { output_tokens_details: { reasoning_tokens: tokens } },
+    } } },
+  ] : [
+    ...(raw ? [{ data: { choices: [{ delta: { reasoning_content: raw } }] } }] : []),
+    ...(summary ? [{ data: { choices: [{ delta: { reasoning_details: [{ type: 'reasoning.summary', index: 0, summary }, ...(encrypted ? [{ type: 'reasoning.encrypted' }] : [])] } }] } }] : []),
+    { data: { choices: [{ delta: { content: answer } }] } },
+    { data: { choices: [], usage: { completion_tokens_details: { reasoning_tokens: tokens } } } },
+  ]
+  return { events }
+}
 
 test('streams, folds, saves and restores reasoning separately from the answer and next request', async ({ page }) => {
   await openWithStream(page)
-  await emit(page, { ...request, kind: 'started', user_message: { id: 'ru', conversation_id: 'demo-chat', parent_id: 'a2-alt', role: 'user', content: 'Reasoning question', include_next: true, created_at: Date.now() } })
-  const first = { parts: [{ id: 's0', kind: 'summary' as const, text: 'Summary 日本語' }], tokens: null, encrypted: false }
-  await emit(page, { ...request, kind: 'delta', reasoning: first })
+  await page.clock.install()
+  await page.clock.pauseAt(new Date())
+  await mockNextBrowserResponses(page, { events: [
+    { data: { type: 'response.reasoning_summary_text.delta', item_id: 'rs', summary_index: 0, delta: 'Summary 日本語' } },
+    { data: { type: 'response.reasoning_summary_text.delta', item_id: 'rs', summary_index: 0, delta: ' continued' } },
+    { data: { type: 'response.reasoning_text.delta', item_id: 'rs', content_index: 0, delta: 'Provider steps' } },
+    { data: { type: 'response.output_text.delta', delta: 'Visible answer' } },
+    { data: { type: 'response.completed', response: { output: [{ type: 'reasoning', id: 'rs', encrypted_content: 'opaque-ciphertext' }], usage: { output_tokens_details: { reasoning_tokens: 123 } } } } },
+  ] })
+  await page.getByRole('textbox', { name: 'Message input', exact: true }).fill('Reasoning question')
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toBeEnabled()
+  await page.clock.runFor(40)
   const messages = page.getByRole('region', { name: 'Conversation messages' })
   const panel = messages.locator('details[aria-label="Response reasoning"]').last()
   await expect(panel.locator('summary')).toHaveText('Reasoning summary')
@@ -50,20 +70,22 @@ test('streams, folds, saves and restores reasoning separately from the answer an
   await expect(panel).toContainText('Summary 日本語')
   await expect(panel.getByRole('checkbox')).toBeDisabled()
   await expect(panel.getByRole('checkbox')).not.toBeChecked()
-  await emit(page, { ...request, kind: 'delta', reasoning: { ...first, parts: [{ id: 's0', kind: 'summary', text: ' continued' }, { id: 't0', kind: 'text', text: 'Provider steps' }], tokens: 123, encrypted: true }, text: 'Visible answer' })
+  await page.clock.runFor(160)
   await expect(panel).toContainText('Summary 日本語 continued')
   await expect(panel).toContainText('Provider steps')
   await expect(panel.locator('summary')).toHaveText('Reasoning 123 tokens')
-  const saved = { parts: [{ id: 's0', kind: 'summary' as const, text: 'Summary 日本語 continued' }, { id: 't0', kind: 'text' as const, text: 'Provider steps' }], tokens: 123, encrypted: true }
-  await emit(page, { ...request, kind: 'done', assistant_message: { id: 'ra', conversation_id: 'demo-chat', parent_id: 'ru', role: 'assistant', content: 'Visible answer', reasoning: saved, include_next: true, created_at: Date.now() } })
-  await expect(messages.getByText('Streaming', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
   await expect(messages.getByText('Visible answer', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Large log review', exact: true }).click()
   await page.getByRole('button', { name: 'Deterministic request architecture', exact: true }).click()
   await messages.locator('details[aria-label="Response reasoning"] summary').click()
   await expect(messages.locator('details[aria-label="Response reasoning"]')).toContainText('Summary 日本語 continued')
   await expect(messages.locator('details[aria-label="Response reasoning"]')).toContainText('protected reasoning')
-  // The inspected history contains only the saved answer.
+  // Native Responses raw reasoning is replayable by default. Uncheck it to
+  // verify the history preview excludes unselected reasoning and the summary.
+  const rawIncluded = messages.locator('details[aria-label="Response reasoning"]').getByRole('checkbox', { name: 'Include reasoning text in next request' })
+  await rawIncluded.click()
+  await expect(rawIncluded).not.toBeChecked()
   await page.getByRole('textbox', { name: 'Message input', exact: true }).fill('Next question')
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
   const preview = page.getByRole('dialog', { name: 'Request preview' }).locator('pre').first()
@@ -74,20 +96,21 @@ test('streams, folds, saves and restores reasoning separately from the answer an
 
 test('includes checked reasoning blocks in previews and the next send, and remembers choices per message', async ({ page }) => {
   await openWithStream(page)
-  const createdAt = Date.now()
-  await emit(page, { ...request, kind: 'started', user_message: { id: 'manual-user', conversation_id: 'demo-chat', parent_id: 'a2-alt', role: 'user', content: 'Manual reasoning question', include_next: true, created_at: createdAt } })
-  await emit(page, { ...request, kind: 'done', assistant_message: {
-    id: 'manual-answer', conversation_id: 'demo-chat', parent_id: 'manual-user', role: 'assistant', content: 'Manual answer', include_next: true, created_at: createdAt + 1,
-    reasoning: { parts: [{ id: 'summary', kind: 'summary', text: 'Selected summary 日本語' }, { id: 'text', kind: 'text', text: 'Optional reasoning steps' }], tokens: 99, encrypted: true },
-  } })
+  await sendMockAnswer(page, 'Manual reasoning question', 'Manual answer', reasoningPlan(
+    'openai_responses', 'Manual answer', 'Optional reasoning steps', 'Selected summary 日本語', 99, true,
+  ))
   const messages = page.getByRole('region', { name: 'Conversation messages' })
   const panel = messages.locator('details[aria-label="Response reasoning"]').last()
   await panel.locator('summary').click()
   const summary = panel.getByRole('checkbox', { name: 'Include reasoning summary in next request' })
   const text = panel.getByRole('checkbox', { name: 'Include reasoning text in next request' })
   await expect(summary).not.toBeChecked()
+  // Unlike the former artificial fixture, a native Responses text part defaults
+  // to selected, so explicitly turn it off before testing opt-in behavior.
+  await expect(text).toBeChecked()
+  await text.click()
   await expect(text).not.toBeChecked()
-  await summary.check()
+  await summary.click()
   await expect(summary).toBeChecked()
   await expect(summary).toBeEnabled()
   await expect(panel).toContainText('Native raw')
@@ -123,51 +146,72 @@ test('includes checked reasoning blocks in previews and the next send, and remem
   await preview.getByRole('button', { name: 'Close', exact: true }).click()
   await page.getByRole('combobox', { name: 'History', exact: true }).selectOption('full')
 
-  await summary.uncheck()
-  await text.check()
+  await summary.click()
+  await expect(summary).not.toBeChecked()
+  await text.click()
   await expect(text).toBeEnabled()
+  await mockNextBrowserResponses(page, { text: 'Follow-up answer' })
   await page.getByRole('button', { name: 'Send message', exact: true }).click()
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __lastBrowserRequest?: { request_json: string } }).__lastBrowserRequest?.request_json ?? '')).toContain('Optional reasoning steps')
-  const sent = await page.evaluate(() => (window as unknown as { __lastBrowserRequest: { request_json: string } }).__lastBrowserRequest.request_json)
+  await expect.poll(async () => (await mockBrowserRequests(page)).at(-1)?.body ?? '').toContain('Optional reasoning steps')
+  const sent = (await mockBrowserRequests(page)).at(-1)!.body
   expect(sent).not.toContain('Selected summary 日本語')
   expect(sent).not.toContain('[Selected reasoning text]')
   expect(JSON.parse(sent).input.some((item: { type?: string; content?: { type: string; text: string }[] }) => item.type === 'reasoning' && item.content?.[0].text === 'Optional reasoning steps')).toBe(true)
-  await expect(messages.locator('details[aria-label="Response reasoning"]').last()).toContainText('Browser demo')
+  await expect(messages.getByText('Follow-up answer', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
 })
 
 test('explains usage-only reasoning and leaves ordinary answers uncluttered', async ({ page }) => {
-  await openWithStream(page)
+  await openWithStream(page, 'openai_chat_completions')
   const messages = page.getByRole('region', { name: 'Conversation messages' })
   await expect(messages.locator('details[aria-label="Response reasoning"]')).toHaveCount(0)
-  await emit(page, { ...request, kind: 'started' })
-  await emit(page, { ...request, kind: 'delta', reasoning: { parts: [], tokens: 456, encrypted: false } })
+  await page.clock.install()
+  await page.clock.pauseAt(new Date())
+  await mockNextBrowserResponses(page, { holdOpen: true, events: [
+    { data: { choices: [], usage: { completion_tokens_details: { reasoning_tokens: 456 } } } },
+  ] })
+  await page.getByRole('textbox', { name: 'Message input', exact: true }).fill('Reasoning token usage only')
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toBeEnabled()
+  await page.clock.runFor(40)
   const panel = messages.locator('details[aria-label="Response reasoning"]')
   await expect(panel.locator('summary')).toContainText('456 tokens')
   await panel.locator('summary').click()
   await expect(panel).toContainText('did not return visible reasoning text')
+  await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
 })
 
 test('streaming follows the bottom, preserves a reader scrolling up, and offers a jump back', async ({ page }) => {
   await openWithStream(page)
+  await page.clock.install()
+  await page.clock.pauseAt(new Date())
   const messages = page.getByRole('region', { name: 'Conversation messages' })
   const jump = page.getByRole('button', { name: 'Scroll to latest message' })
   const bottomGap = () => messages.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)
-  await emit(page, { ...request, kind: 'started' })
-  await emit(page, { ...request, kind: 'delta', text: 'A long response\n\n'.repeat(80) })
+  await mockNextBrowserResponses(page, { holdOpen: true, events: [
+    { data: { type: 'response.output_text.delta', delta: 'A long response\n\n'.repeat(80) } },
+    { data: { type: 'response.output_text.delta', delta: 'More response\n\n'.repeat(40) } },
+    { data: { type: 'response.output_text.delta', delta: 'The final section\n\n'.repeat(20) } },
+  ] })
+  await page.getByRole('textbox', { name: 'Message input', exact: true }).fill('Long stream')
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toBeEnabled()
+  await page.clock.runFor(40)
   await expect.poll(bottomGap).toBeLessThan(48)
   await expect(jump).toHaveCount(0)
   await messages.hover()
   await page.mouse.wheel(0, -700)
   await expect(jump).toBeVisible()
   const readingPosition = await messages.evaluate((element) => element.scrollTop)
-  await emit(page, { ...request, kind: 'delta', text: 'More response\n\n'.repeat(40) })
+  await page.clock.runFor(40)
   await expect.poll(() => messages.evaluate((element) => element.scrollTop)).toBe(readingPosition)
   await jump.click()
   await expect.poll(bottomGap).toBeLessThan(48)
   await expect(jump).toHaveCount(0)
   await expect(page.getByRole('textbox', { name: 'Message input', exact: true })).toBeFocused()
-  await emit(page, { ...request, kind: 'delta', text: 'The final section\n\n'.repeat(20) })
+  await page.clock.runFor(40)
   await expect.poll(bottomGap).toBeLessThan(48)
+  await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
 })
 
 test('summary setting preserves other overrides, survives reload, and appears in request preview', async ({ page }) => {
@@ -200,11 +244,7 @@ test('summary setting preserves other overrides, survives reload, and appears in
 for (const protocol of ['openai_chat_completions', 'openai_responses'] as const) {
   test(`${protocol}: edits raw reasoning as a branch and pairs the next intervention without quoting it`, async ({ page }) => {
     await openWithStream(page, protocol)
-    await emit(page, { ...request, kind: 'started', user_message: { id: 'raw-user', conversation_id: 'demo-chat', parent_id: 'a2-alt', role: 'user', content: 'Work on the draft', include_next: true, created_at: 1 } })
-    await emit(page, { ...request, kind: 'done', assistant_message: {
-      id: 'raw-answer', conversation_id: 'demo-chat', parent_id: 'raw-user', role: 'assistant', content: 'Original answer', include_next: true, created_at: 2,
-      reasoning: { parts: [{ id: 'raw', kind: 'text', text: '  First plan\n日本語\n', include_next: true }], tokens: 42, encrypted: false },
-    } })
+    await sendMockAnswer(page, 'Work on the draft', 'Original answer', reasoningPlan(protocol, 'Original answer', '  First plan\n日本語\n'))
     const messages = page.getByRole('region', { name: 'Conversation messages' })
     const original = messages.getByRole('article', { name: 'Assistant message' }).filter({ hasText: 'Original answer' })
     await original.locator('details[aria-label="Response reasoning"] summary').click()

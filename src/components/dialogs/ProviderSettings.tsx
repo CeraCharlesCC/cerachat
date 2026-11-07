@@ -1,6 +1,6 @@
 import { useId, useMemo, useState } from 'react'
 import { Box, Check, ChevronRight, HardDrive, Plus, Server, Trash2 } from 'lucide-react'
-import { deleteModel, deleteProvider, saveModel, saveProvider } from '../../lib/backend'
+import { browserProviderKeyPersistence, deleteModel, deleteProvider, isTauri, saveModel, saveProvider } from '../../lib/backend'
 import { makeUniqueModelId, validateModel, validateProvider } from '../../lib/catalog'
 import type { ModelProfile, ProviderCatalog, ProviderProfile } from '../../types'
 import { Button } from '../ui/Button'
@@ -55,6 +55,7 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
   const [providerDraft, setProviderDraft] = useState<ProviderProfile | null>(firstProvider ? { ...firstProvider } : null)
   const [providerPersisted, setProviderPersisted] = useState(Boolean(firstProvider))
   const [apiKey, setApiKey] = useState('')
+  const [rememberBrowserKey, setRememberBrowserKey] = useState(() => firstProvider ? browserProviderKeyPersistence(firstProvider.id) : false)
   const [clearApiKey, setClearApiKey] = useState(false)
   const [modelDraft, setModelDraft] = useState<ModelDraft | null>(null)
   const [modelPersisted, setModelPersisted] = useState(false)
@@ -76,6 +77,7 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
     setProviderPersisted(true)
     setProviderTab('connection')
     setApiKey('')
+    setRememberBrowserKey(browserProviderKeyPersistence(provider.id))
     setClearApiKey(false)
     setModelDraft(null)
     setModelPersisted(false)
@@ -90,6 +92,7 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
     setProviderPersisted(false)
     setProviderTab('connection')
     setApiKey('')
+    setRememberBrowserKey(false)
     setClearApiKey(false)
     setModelDraft(null)
     setModelPersisted(false)
@@ -114,7 +117,7 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
       if (!providerDraft.name.trim()) throw new Error('Provider name must not be empty')
       validateProvider(providerDraft)
       const keyUpdate = providerPersisted ? (clearApiKey ? '' : apiKey === '' ? null : apiKey) : apiKey
-      const next = await saveProvider(providerDraft, keyUpdate)
+      const next = await saveProvider(providerDraft, keyUpdate, rememberBrowserKey)
       onCatalogChange(next)
       setSelectedProviderId(providerDraft.id)
       setProviderPersisted(true)
@@ -141,6 +144,7 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
       setSelectedProviderId(nextProvider?.id ?? null)
       setProviderDraft(nextProvider ? { ...nextProvider } : null)
       setProviderPersisted(Boolean(nextProvider))
+      setRememberBrowserKey(nextProvider ? browserProviderKeyPersistence(nextProvider.id) : false)
       setApiKey('')
       setClearApiKey(false)
       setModelDraft(null)
@@ -328,11 +332,13 @@ export function ProviderSettings({ catalog, onCatalogChange, onClose }: Provider
                     <label className={labelClass}>Provider name<input className={fieldClass} value={providerDraft.name} onChange={(event) => updateProvider('name', event.target.value)} /></label>
                     <label className={labelClass}>Provider ID<input className={`${fieldClass} font-mono read-only:text-muted-foreground`} aria-label="Provider ID" value={providerDraft.id} readOnly={providerPersisted} aria-readonly={providerPersisted} onChange={(event) => updateProvider('id', event.target.value)} /><span className="font-normal leading-4 text-muted-foreground">Fixed after the first save.</span></label>
                     <label className={labelClass}>Protocol<select className={fieldClass} value={providerDraft.protocol} onChange={(event) => updateProvider('protocol', event.target.value as ProviderProfile['protocol'])}><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses API</option></select></label>
-                    <label className={labelClass}>API key storage<select className={fieldClass} value={providerDraft.api_key_storage} onChange={(event) => updateProvider('api_key_storage', event.target.value as ProviderProfile['api_key_storage'])}><option value="plain_portable">Plain portable configuration</option><option value="windows_dpapi" disabled>Windows DPAPI (planned)</option></select></label>
+                    {isTauri() ? <label className={labelClass}>API key storage<select className={fieldClass} value={providerDraft.api_key_storage} onChange={(event) => updateProvider('api_key_storage', event.target.value as ProviderProfile['api_key_storage'])}><option value="plain_portable">Plain portable configuration</option><option value="windows_dpapi" disabled>Windows DPAPI (planned)</option></select></label>
+                      : <div className={`${labelClass} justify-end`}>Browser key lifetime<span className="text-xs font-normal leading-5 text-muted-foreground">Session-only unless you explicitly choose local persistence below.</span></div>}
                     <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>Base URL<input className={`${fieldClass} font-mono`} value={providerDraft.base_url} onChange={(event) => updateProvider('base_url', event.target.value)} placeholder="https://api.openai.com/v1" /><span className="font-normal leading-4 text-muted-foreground">Endpoint: <code>{endpointName}</code></span></label>
-                    <div className="col-span-2 mt-1 border-t border-border/70 pt-5 max-sm:col-span-1"><h4 className="m-0 text-sm font-medium">Authentication</h4><p className="mb-0 mt-1 text-xs leading-5 text-muted-foreground">Stored keys are never shown here.</p></div>
+                    <div className="col-span-2 mt-1 border-t border-border/70 pt-5 max-sm:col-span-1"><h4 className="m-0 text-sm font-medium">Authentication</h4><p className="mb-0 mt-1 text-xs leading-5 text-muted-foreground">Saved keys are never shown here.</p></div>
                     <label className={`${labelClass} col-span-2 max-sm:col-span-1`}>API key<input className={fieldClass} type="password" autoComplete="new-password" value={apiKey} disabled={clearApiKey} placeholder={providerPersisted ? 'Leave empty to keep the stored key' : 'Optional'} onChange={(event) => { setApiKey(event.target.value); setClearApiKey(false); setSaved(false) }} /></label>
                     {providerPersisted && <div className="col-span-2 flex flex-wrap items-center gap-3 max-sm:col-span-1"><Button size="sm" variant={clearApiKey ? 'destructive' : 'outline'} onClick={() => { setClearApiKey((current) => !current); setApiKey(''); setSaved(false) }}>{clearApiKey ? 'Key will be cleared' : 'Clear stored key'}</Button>{clearApiKey && <span className="text-xs text-destructive">Save provider to apply.</span>}</div>}
+                    {!isTauri() && <label className="col-span-2 flex items-start gap-3 rounded-xl border border-border bg-muted/30 p-4 text-xs max-sm:col-span-1"><input type="checkbox" className="mt-0.5 size-3.5 shrink-0 accent-[var(--primary)]" checked={rememberBrowserKey} onChange={(event) => { setRememberBrowserKey(event.target.checked); setSaved(false) }} aria-label="Remember API key on this device"/><span><span className="block font-medium">Remember API key on this device</span><span className="mt-1 block leading-5 text-muted-foreground">Off by default: keys remain in this tab's session, not persistent local storage. Turning this on saves the key as plaintext in this browser profile. Backups still omit keys.</span></span></label>}
                   </fieldset>
                 </div>
                 <div role="tabpanel" id={`${panelId}-prompt`} aria-labelledby={`${panelId}-prompt-tab`} hidden={providerTab !== 'prompt'}>

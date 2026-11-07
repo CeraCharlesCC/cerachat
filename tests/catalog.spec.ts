@@ -109,7 +109,9 @@ test('local mutation failures preserve valid data, secret separation and provide
     await backend.deleteModel('alpha', 'tiny-api')
     const afterInactiveDelete = (await backend.bootstrap()).provider_catalog.selected_model_id
     const catalog = await backend.deleteProvider('alpha')
-    return { errors, invalidPreserved, failedWritePreserved, afterFailure, afterInactiveDelete, catalog, persisted: JSON.parse(localStorage.getItem(key)!) }
+    return { errors, invalidPreserved, failedWritePreserved, afterFailure, afterInactiveDelete, catalog,
+      persisted: JSON.parse(localStorage.getItem(key)!),
+      sessionKeys: JSON.parse(sessionStorage.getItem(backend.BROWSER_SESSION_KEYS_STORAGE_KEY)!) }
   }, storageKey)
   expect(result.errors).toHaveLength(3)
   expect(result.invalidPreserved).toBe(true)
@@ -118,7 +120,8 @@ test('local mutation failures preserve valid data, secret separation and provide
   expect(result.afterInactiveDelete).toBe('alpha::shared-api')
   expect(result.catalog.selected_model_id).toBeNull()
   expect(result.catalog.models.every((model: {provider_id: string}) => model.provider_id !== 'alpha')).toBe(true)
-  expect(result.persisted.secrets.api_keys).toEqual({ beta: 'beta-secret' })
+  expect(result.persisted.secrets.api_keys).toEqual({ beta: '' })
+  expect(result.sessionKeys).toEqual({ beta: 'beta-secret' })
   expect(JSON.stringify(result.persisted.settings)).not.toContain('beta-secret')
   expect(JSON.stringify(result.persisted.settings)).not.toContain('api_key"')
   expect(externalRequests).toEqual([])
@@ -272,11 +275,14 @@ test('catalog editor creates, edits and deletes locally with explicit key update
   await editor.getByLabel('Provider name', { exact: true }).fill('Renamed Gateway')
   await editor.getByRole('button', { name: 'Save provider', exact: true }).click()
   let saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)!), storageKey)
-  expect(saved.secrets.api_keys.manual).toBe('manual-secret')
+  expect(saved.secrets.api_keys.manual).toBe('')
+  expect(saved.remembered_provider_ids).toEqual([])
+  expect(await page.evaluate(() => sessionStorage.getItem('cerachat.provider-session-keys.v1'))).toContain('manual-secret')
   await editor.getByRole('button', { name: 'Clear stored key', exact: true }).click()
   await editor.getByRole('button', { name: 'Save provider', exact: true }).click()
   saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)!), storageKey)
   expect(saved.secrets.api_keys.manual).toBe('')
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('cerachat.provider-session-keys.v1')!).manual)).toBe('')
   await editor.getByRole('button', { name: /raw-manual-model/ }).click()
   await editor.getByLabel('Display name (optional)', { exact: true }).fill('Renamed Model')
   await editor.getByLabel('Max output tokens', { exact: true }).fill('2048')
@@ -323,6 +329,10 @@ for (const action of ['Preview', 'Send message', 'Regenerate response']) {
   test(`${action} refreshes a selection removed by another instance and stays local`, async ({ page }) => {
     await page.goto('/')
     await seedCatalog(page)
+    // Wait until the UI has loaded the selected model before externally
+    // mutating the catalog. OPFS/worker startup is asynchronous, unlike the
+    // old synchronous browser demo, so deletion during startup races bootstrap.
+    await expect(page.getByRole('button', { name: /Friendly Alpha/ }).first()).toBeVisible()
     const before = await page.evaluate(async () => {
       const backend = await import('/src/lib/backend.ts')
       await backend.deleteModel('alpha', 'shared-api')
@@ -425,7 +435,8 @@ test('version 1 parameters migrate to every existing model and persist only on a
   for (const model of result.catalog.models) expect(model).toMatchObject({ temperature: 0.3, raw_json_overrides: '{"reasoning":{"effort":"high"},"store":false}' })
   expect(result.catalog.providers[0]).not.toHaveProperty('temperature')
   expect(result.catalog.providers[0]).not.toHaveProperty('raw_json_overrides')
-  expect(result.saved.version).toBe(2)
+  expect(result.saved.version).toBe(3)
+  expect(result.saved.remembered_provider_ids).toEqual(['old'])
   expect(result.saved.secrets.api_keys).toEqual({ old: 'preserved' })
   expect(result.saved.settings.models[0].temperature).toBeNull()
   expect(result.body).toMatchObject({ temperature: 0.3, reasoning: { effort: 'high' }, store: false })

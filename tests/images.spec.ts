@@ -1,10 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
+import { installMockBrowserProvider } from './helpers/browser-provider'
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='
 const dataUrl = `data:image/png;base64,${png}`
 const image = { name: 'sample.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') }
 
 async function open(page: Page, service = 'openrouter', protocol = 'openai_chat_completions', enabled = true) {
+  await installMockBrowserProvider(page)
   await page.addInitScript(({ service, protocol, enabled }) => {
     if (localStorage.getItem('cerachat.provider-catalog.v1')) return
     localStorage.setItem('cerachat.provider-catalog.v1', JSON.stringify({
@@ -86,7 +88,12 @@ test('switching to text-only blocks image drafts and included image history with
   await page.getByRole('main').getByRole('button', { name: /Text only/ }).click()
   await page.getByRole('option', { name: /Vision/ }).click()
   await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  // Persistence and fetch are asynchronous; don't interpret an initially
+  // absent Stop button as completion before Send has reached the backend.
+  await expect(page.getByRole('article', { name: 'User message' }).filter({ hasText: 'Question' })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0)
+  await expect(page.getByLabel('Message input')).toHaveValue('')
   await page.getByRole('combobox', { name: 'History', exact: true }).selectOption('full')
   await page.getByLabel('Message input').fill('Follow up')
   await page.getByRole('main').getByRole('button', { name: /Vision/ }).click()

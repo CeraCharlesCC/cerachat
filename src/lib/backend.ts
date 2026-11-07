@@ -1,8 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { demoBootstrap, demoMessages, demoSourceLines } from './demo'
+import * as browserData from './browserData'
 import { estimateTokens } from './utils'
-import { auditHistory, editedReasoning, historyContent, historyMessage, interleaveHistory, interventionTool, wireHistory } from './reasoning'
+import { auditHistory, historyContent, historyMessage, interleaveHistory, interventionTool, mergeReasoning, wireHistory } from './reasoning'
+import { streamBrowserProviderRequest } from './browserTransport'
 import { validateImages, MAX_REQUEST_IMAGE_URL_BYTES, IMAGE_INPUT_HELP } from './images'
 import { makeUniqueModelId, resolveProviderConfig, validateModel, validateProvider, validateProviderCatalog } from './catalog'
 import type {
@@ -28,13 +29,20 @@ import type {
 
 export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
-const browserBootstrap: BootstrapState = structuredClone(demoBootstrap)
-let browserMessages: Message[] = structuredClone(demoMessages)
 const browserListeners = new Set<(payload: StreamPayload) => void>()
 
 export const BROWSER_PROVIDER_STORAGE_KEY = 'cerachat.provider-catalog.v1'
+export const BROWSER_SESSION_KEYS_STORAGE_KEY = 'cerachat.provider-session-keys.v1'
 
 interface BrowserProviderEnvelope {
+  version: 3
+  settings: ProviderCatalog
+  // Only keys explicitly opted into persistence are stored here.
+  secrets: { api_keys: Record<string, string> }
+  remembered_provider_ids: string[]
+}
+
+interface LegacyBrowserProviderEnvelope {
   version: 2
   settings: ProviderCatalog
   secrets: { api_keys: Record<string, string> }
@@ -52,7 +60,7 @@ function exactKeys(value: Record<string, unknown>, expected: string[]): boolean 
   return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index])
 }
 
-function validateBrowserEnvelope(value: unknown): asserts value is BrowserProviderEnvelope {
+function validateLegacyEnvelope(value: unknown): asserts value is LegacyBrowserProviderEnvelope {
   if (!isRecord(value) || !exactKeys(value, ['version', 'settings', 'secrets']) || value.version !== 2) {
     throw new Error('Browser provider settings use an unsupported or invalid schema')
   }
@@ -66,6 +74,28 @@ function validateBrowserEnvelope(value: unknown): asserts value is BrowserProvid
   for (const [providerId, apiKey] of Object.entries(value.secrets.api_keys)) {
     if (!providerIds.has(providerId)) throw new Error(`API key belongs to unknown provider "${providerId}"`)
     if (typeof apiKey !== 'string') throw new Error(`API key for provider "${providerId}" must be a string`)
+  }
+}
+
+function validateBrowserEnvelope(value: unknown): asserts value is BrowserProviderEnvelope {
+  if (!isRecord(value) || !exactKeys(value, ['version', 'settings', 'secrets', 'remembered_provider_ids']) || value.version !== 3) {
+    throw new Error('Browser provider settings use an unsupported or invalid schema')
+  }
+  validateProviderCatalog(value.settings)
+  if (!isRecord(value.secrets) || !exactKeys(value.secrets, ['api_keys']) || !isRecord(value.secrets.api_keys)) {
+    throw new Error('Browser provider secrets have an invalid shape')
+  }
+  const providerIds = new Set(value.settings.providers.map((provider) => provider.id))
+  if (!Array.isArray(value.remembered_provider_ids)
+    || value.remembered_provider_ids.some((id: unknown) => typeof id !== 'string' || !providerIds.has(id))
+    || new Set(value.remembered_provider_ids).size !== value.remembered_provider_ids.length) {
+    throw new Error('Remembered key preferences are invalid')
+  }
+  if (Object.keys(value.secrets.api_keys).length !== providerIds.size) throw new Error('Every provider must have exactly one stored key entry')
+  const remembered = new Set(value.remembered_provider_ids)
+  for (const [id, key] of Object.entries(value.secrets.api_keys)) {
+    if (!providerIds.has(id) || typeof key !== 'string') throw new Error('Stored API key belongs to an unknown provider or is invalid')
+    if (!remembered.has(id) && key !== '') throw new Error('A session-only API key must not be saved to local storage')
   }
 }
 
@@ -99,7 +129,7 @@ function upgradeBrowserEnvelope(value: unknown): unknown {
 
 function readBrowserEnvelope(): BrowserProviderEnvelope {
   const stored = localStorage.getItem(BROWSER_PROVIDER_STORAGE_KEY)
-  if (stored === null) return { version: 2, settings: emptyCatalog(), secrets: { api_keys: {} } }
+  if (stored === null) return { version: 3, settings: emptyCatalog(), secrets: { api_keys: {} }, remembered_provider_ids: [] }
   let value: unknown
   try {
     value = JSON.parse(stored)
@@ -108,11 +138,42 @@ function readBrowserEnvelope(): BrowserProviderEnvelope {
   }
   try {
     value = upgradeBrowserEnvelope(value)
+    // Read legacy v1/v2 without overwriting it. The next explicit catalog edit
+    // upgrades it, *preserving* legacy persisted keys and their lifetime.
+    if (isRecord(value) && value.version === 2) {
+      validateLegacyEnvelope(value)
+      value = { ...value, version: 3, remembered_provider_ids: value.settings.providers.map((provider) => provider.id) }
+    }
     validateBrowserEnvelope(value)
   } catch (reason) {
     throw new Error(`Browser provider settings are invalid: ${reason instanceof Error ? reason.message : String(reason)}. Clear this site's stored data and configure the catalog again.`)
   }
   return structuredClone(value)
+}
+
+const temporaryBrowserKeys = new Map<string, string>()
+
+function readSessionKeys(): Record<string, string> {
+  let stored: string | null
+  try { stored = sessionStorage.getItem(BROWSER_SESSION_KEYS_STORAGE_KEY) } catch { return Object.fromEntries(temporaryBrowserKeys) }
+  if (stored === null) return Object.fromEntries(temporaryBrowserKeys)
+  let decoded: unknown
+  try { decoded = JSON.parse(stored) } catch { throw new Error('Browser session API keys contain malformed JSON') }
+  if (!isRecord(decoded) || Object.values(decoded).some((value) => typeof value !== 'string')) {
+    throw new Error('Browser session API keys have an invalid shape')
+  }
+  return decoded as Record<string, string>
+}
+
+function writeSessionKeys(keys: Record<string, string>) {
+  try {
+    sessionStorage.setItem(BROWSER_SESSION_KEYS_STORAGE_KEY, JSON.stringify(keys))
+    temporaryBrowserKeys.clear()
+  } catch {
+    // Restricted/private storage can still use a tab-scoped in-memory secret.
+    temporaryBrowserKeys.clear()
+    for (const [id, key] of Object.entries(keys)) temporaryBrowserKeys.set(id, key)
+  }
 }
 
 function writeBrowserEnvelope(envelope: BrowserProviderEnvelope): ProviderCatalog {
@@ -126,9 +187,16 @@ function activeBrowserProvider(): ProviderConfig {
   const selected = envelope.settings.selected_model_id
   const providerId = selected?.split('::')[0]
   if (!providerId) return resolveProviderConfig(envelope.settings, '')
-  const apiKey = envelope.secrets.api_keys[providerId]
+  const apiKey = envelope.remembered_provider_ids.includes(providerId)
+    ? envelope.secrets.api_keys[providerId]
+    : readSessionKeys()[providerId] ?? ''
   if (apiKey === undefined) throw new Error(`API key entry for provider "${providerId}" is missing`)
   return resolveProviderConfig(envelope.settings, apiKey)
+}
+
+/** Whether a browser user explicitly chose durable local key storage. */
+export function browserProviderKeyPersistence(providerId: string): boolean {
+  return !isTauri() && readBrowserEnvelope().remembered_provider_ids.includes(providerId)
 }
 
 async function call<T>(name: string, args?: Record<string, unknown>): Promise<T> {
@@ -137,131 +205,53 @@ async function call<T>(name: string, args?: Record<string, unknown>): Promise<T>
 }
 
 export async function bootstrap(): Promise<BootstrapState> {
-  if (!isTauri()) return { ...structuredClone(browserBootstrap), provider_catalog: readBrowserEnvelope().settings }
+  if (!isTauri()) return { ...await browserData.bootstrap(), provider_catalog: readBrowserEnvelope().settings }
   return call<BootstrapState>('bootstrap')
 }
 
 export async function getMessages(conversationId: string): Promise<Message[]> {
-  if (!isTauri()) return structuredClone(browserMessages.filter((message) => message.conversation_id === conversationId))
+  if (!isTauri()) return browserData.getMessages(conversationId)
   return call<Message[]>('get_messages', { conversationId })
 }
 
 export async function createConversation(): Promise<Conversation> {
-  if (!isTauri()) {
-    const now = Date.now()
-    const conversation = { id: crypto.randomUUID(), title: 'New chat', created_at: now, updated_at: now }
-    browserBootstrap.conversations.unshift(conversation)
-    return structuredClone(conversation)
-  }
+  if (!isTauri()) return browserData.createConversation()
   return call<Conversation>('create_conversation')
 }
 
 export async function deleteConversation(conversationId: string): Promise<void> {
-  if (!isTauri()) {
-    browserBootstrap.conversations = browserBootstrap.conversations.filter((item) => item.id !== conversationId)
-    browserMessages = browserMessages.filter((message) => message.conversation_id !== conversationId)
-    const removed = new Set(browserBootstrap.sources.filter((source) => source.conversation_id === conversationId).map((source) => source.id))
-    browserBootstrap.sources = browserBootstrap.sources.filter((source) => !removed.has(source.id))
-    browserBootstrap.slices = browserBootstrap.slices.filter((slice) => !removed.has(slice.source_id))
-    for (const id of removed) browserSourceTexts.delete(id)
-    return
-  }
+  if (!isTauri()) return browserData.deleteConversation(conversationId)
   await call('delete_conversation', { conversationId })
 }
 
 export async function setMessageIncluded(messageId: string, included: boolean): Promise<void> {
-  if (!isTauri()) {
-    const message = browserMessages.find((item) => item.id === messageId)
-    if (message) message.include_next = included
-    return
-  }
+  if (!isTauri()) return browserData.setMessageIncluded(messageId, included)
   await call('set_message_included', { messageId, included })
 }
 
 export async function setReasoningPartIncluded(messageId: string, partId: string, included: boolean): Promise<void> {
   if (isTauri()) return call('set_reasoning_part_included', { messageId, partId, included })
-  const message = browserMessages.find((item) => item.id === messageId && item.role === 'assistant')
-  const part = message?.reasoning?.parts.find((item) => item.id === partId)
-  if (!part) throw new Error('Reasoning block not found')
-  if (included && !part.text) throw new Error('Reasoning block has no visible text')
-  part.include_next = included
+  return browserData.setReasoningPartIncluded(messageId, partId, included)
 }
 
 export async function deleteBranch(messageId: string): Promise<void> {
-  if (!isTauri()) {
-    const ids = new Set([messageId])
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const message of browserMessages) {
-        if (message.parent_id && ids.has(message.parent_id) && !ids.has(message.id)) {
-          ids.add(message.id)
-          changed = true
-        }
-      }
-    }
-    browserMessages = browserMessages.filter((message) => !ids.has(message.id))
-    return
-  }
+  if (!isTauri()) return browserData.deleteBranch(messageId)
   await call('delete_branch', { messageId })
 }
 
 export async function editMessage(messageId: string, content: string, reasoning?: Reasoning | null): Promise<Message> {
   if (isTauri()) return call<Message>('edit_message', { messageId, content, reasoning })
-  const original = browserMessages.find((message) => message.id === messageId)
-  if (!original) throw new Error('Message not found')
-  const nextReasoning = reasoning === undefined ? (original.content === content ? original.reasoning ?? null : null) : editedReasoning(original.reasoning, reasoning)
-  if (original.role !== 'assistant' && nextReasoning) throw new Error('Reasoning requires an assistant message')
-  if (!content.trim() && !original.images?.length && !nextReasoning?.parts.some((part) => part.text.trim())) throw new Error('Message content cannot be empty')
-  if (original.content === content && JSON.stringify(nextReasoning) === JSON.stringify(original.reasoning ?? null)) return structuredClone(original)
-  const edited = { ...original, id: crypto.randomUUID(), content, reasoning: nextReasoning, created_at: Date.now() }
-  browserMessages.push(edited)
-  return structuredClone(edited)
-}
-
-const browserSourceTexts = new Map<string, string>()
-
-function sourceText(sourceId: string): string {
-  const stored = browserSourceTexts.get(sourceId)
-  if (stored !== undefined) return stored
-  const source = browserBootstrap.sources.find((item) => item.id === sourceId)
-  if (!source) throw new Error('Source not found')
-  return demoSourceLines(sourceId, 1, source.line_count).lines.join('\n')
-}
-
-function sliceText(args: AddSliceArgs): string {
-  const text = sourceText(args.sourceId)
-  if (args.rangeType === 'all') return text
-  const units = args.rangeType === 'lines' ? text.split('\n') : Array.from(text)
-  const offset = args.rangeType === 'lines' ? 1 : 0
-  const start = args.startPos ?? offset
-  const end = args.endPos ?? (args.rangeType === 'lines' ? start : units.length)
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start < offset || end < start || end > units.length || (offset === 1 && !text)) throw new Error('Range is outside the source')
-  return units.slice(start - offset, end).join(offset ? '\n' : '') + (offset && end < units.length ? '\n' : '')
+  return browserData.editMessage(messageId, content, reasoning)
 }
 
 export async function addTextSource(conversationId: string, name: string, text: string): Promise<WorkspaceSource> {
   if (isTauri()) return call('add_text_source', { conversationId, name, text })
-  requireBrowserConversation(conversationId)
-  if (!name.trim() || !text.trim()) throw new Error('A name and text are required')
-  const existing = browserBootstrap.sources.find((source) => source.conversation_id === conversationId && source.origin_path === 'pasted-text' && source.display_name === name.trim() && sourceText(source.id) === text)
-  if (existing) return structuredClone(existing)
-  const source: WorkspaceSource = {
-    id: crypto.randomUUID(), conversation_id: conversationId, display_name: name.trim(), origin_path: 'pasted-text', archive_path: null,
-    blob_hash: 'browser-text', original_size: new TextEncoder().encode(text).length,
-    line_count: text ? text.split('\n').length : 0, created_at: Date.now(),
-  }
-  browserBootstrap.sources.push(source)
-  browserSourceTexts.set(source.id, text)
-  return structuredClone(source)
+  return browserData.addTextSource(conversationId, name, text)
 }
 
 export async function reorderContextSlices(conversationId: string, sliceIds: string[]): Promise<void> {
   if (isTauri()) return call('reorder_context_slices', { conversationId, sliceIds })
-  const slices = browserConversationSlices(conversationId)
-  const ids = new Set(sliceIds)
-  if (ids.size !== sliceIds.length || ids.size !== slices.length || slices.some((slice) => !ids.has(slice.id))) throw new Error('Context changed; refresh and try reordering again')
-  slices.forEach((slice) => { slice.sort_order = sliceIds.indexOf(slice.id) })
+  return browserData.reorderContextSlices(conversationId, sliceIds)
 }
 
 export async function importSources(conversationId: string, paths: string[]): Promise<WorkspaceSource[]> {
@@ -269,117 +259,60 @@ export async function importSources(conversationId: string, paths: string[]): Pr
   return call<WorkspaceSource[]>('import_sources', { conversationId, paths })
 }
 
-function requireBrowserConversation(conversationId: string) {
-  if (!browserBootstrap.conversations.some((conversation) => conversation.id === conversationId)) throw new Error('Conversation not found')
-}
-
-function browserConversationSlices(conversationId: string): ContextSlice[] {
-  const sourceIds = new Set(browserBootstrap.sources.filter((source) => source.conversation_id === conversationId).map((source) => source.id))
-  return browserBootstrap.slices.filter((slice) => sourceIds.has(slice.source_id))
-}
-
 export async function referenceSource(conversationId: string, sourceId: string): Promise<WorkspaceSource> {
   if (isTauri()) return call('reference_source', { conversationId, sourceId })
-  requireBrowserConversation(conversationId)
-  const source = browserBootstrap.sources.find((source) => source.id === sourceId)
-  if (!source) throw new Error('Source not found')
-  const text = sourceText(source.id)
-  const existing = browserBootstrap.sources.find((item) => item.conversation_id === conversationId
-    && item.display_name === source.display_name && item.origin_path === source.origin_path
-    && item.archive_path === source.archive_path && sourceText(item.id) === text)
-  if (existing) return structuredClone(existing)
-  const referenced = { ...source, id: crypto.randomUUID(), conversation_id: conversationId, created_at: Date.now() }
-  browserBootstrap.sources.push(referenced)
-  browserSourceTexts.set(referenced.id, text)
-  return structuredClone(referenced)
+  return browserData.referenceSource(conversationId, sourceId)
 }
 
 export async function removeSource(sourceId: string): Promise<void> {
-  if (!isTauri()) {
-    browserSourceTexts.delete(sourceId)
-    browserBootstrap.sources = browserBootstrap.sources.filter((source) => source.id !== sourceId)
-    browserBootstrap.slices = browserBootstrap.slices.filter((slice) => slice.source_id !== sourceId)
-    return
-  }
+  if (!isTauri()) return browserData.removeSource(sourceId)
   await call('remove_source', { sourceId })
 }
 
 export async function getSourceLines(sourceId: string, startLine = 1, count = 200): Promise<SourceLines> {
-  if (!isTauri()) {
-    const text = sourceText(sourceId)
-    const lines = text ? text.split('\n') : []
-    const start = Math.max(1, startLine)
-    return { source_id: sourceId, start_line: start, total_lines: lines.length, lines: lines.slice(start - 1, start - 1 + Math.min(500, count)) }
-  }
+  if (!isTauri()) return browserData.getSourceLines(sourceId, startLine, count)
   return call<SourceLines>('get_source_lines', { sourceId, startLine, count })
 }
 
 export async function addContextSlice(args: AddSliceArgs): Promise<ContextSlice> {
-  if (!isTauri()) {
-    const source = browserBootstrap.sources.find((item) => item.id === args.sourceId)
-    if (!source) throw new Error('Source not found')
-    const selected = sliceText(args)
-    const startPos = args.rangeType === 'all' ? null : args.startPos ?? null
-    const endPos = args.rangeType === 'all' ? null : args.endPos ?? null
-    const existing = browserBootstrap.slices.find((slice) => slice.source_id === args.sourceId && slice.range_type === args.rangeType && slice.start_pos === startPos && slice.end_pos === endPos)
-    if (existing) {
-      Object.assign(existing, { enabled: true, wrapper: args.wrapper, insert_at: args.insertAt })
-      return structuredClone(existing)
-    }
-    const slice: ContextSlice = {
-      id: crypto.randomUUID(),
-      source_id: source.id,
-      source_name: source.display_name,
-      range_type: args.rangeType,
-      start_pos: startPos,
-      end_pos: endPos,
-      enabled: true,
-      sort_order: Math.max(-1, ...browserBootstrap.slices.map((slice) => slice.sort_order)) + 1,
-      wrapper: args.wrapper,
-      insert_at: args.insertAt,
-      estimated_tokens: estimateTokens(selected),
-    }
-    browserBootstrap.slices.push(slice)
-    return structuredClone(slice)
-  }
+  if (!isTauri()) return browserData.addContextSlice(args)
   return call<ContextSlice>('add_context_slice', { args })
 }
 
 export async function updateContextSlice(args: UpdateSliceArgs): Promise<void> {
-  if (!isTauri()) {
-    const slice = browserBootstrap.slices.find((item) => item.id === args.sliceId)
-    if (slice) {
-      if (args.enabled !== undefined) slice.enabled = args.enabled
-      if (args.wrapper !== undefined) slice.wrapper = args.wrapper
-      if (args.insertAt !== undefined) slice.insert_at = args.insertAt
-      if (args.sortOrder !== undefined) slice.sort_order = args.sortOrder
-    }
-    return
-  }
+  if (!isTauri()) return browserData.updateContextSlice(args)
   await call('update_context_slice', { args })
 }
 
 export async function deleteContextSlice(sliceId: string): Promise<void> {
-  if (!isTauri()) {
-    browserBootstrap.slices = browserBootstrap.slices.filter((slice) => slice.id !== sliceId)
-    return
-  }
+  if (!isTauri()) return browserData.deleteContextSlice(sliceId)
   await call('delete_context_slice', { sliceId })
 }
 
-export async function saveProvider(provider: ProviderProfile, apiKey: string | null): Promise<ProviderCatalog> {
+export async function saveProvider(provider: ProviderProfile, apiKey: string | null, persistBrowserKey?: boolean): Promise<ProviderCatalog> {
   if (!isTauri()) {
     validateProvider(provider)
     const envelope = readBrowserEnvelope()
+    const session = readSessionKeys()
     const index = envelope.settings.providers.findIndex((item) => item.id === provider.id)
     if (index < 0) envelope.settings.providers.push(structuredClone(provider))
     else envelope.settings.providers[index] = structuredClone(provider)
-    const previousApiKey = Object.prototype.hasOwnProperty.call(envelope.secrets.api_keys, provider.id)
-      ? envelope.secrets.api_keys[provider.id]
-      : ''
+    const wasRemembered = envelope.remembered_provider_ids.includes(provider.id)
+    const previousApiKey = wasRemembered ? envelope.secrets.api_keys[provider.id] ?? '' : session[provider.id] ?? ''
     const nextApiKey = apiKey ?? previousApiKey
-    envelope.secrets.api_keys = { ...envelope.secrets.api_keys, [provider.id]: nextApiKey }
-    return writeBrowserEnvelope(envelope)
+    const remember = persistBrowserKey ?? wasRemembered
+    if (remember) {
+      if (!wasRemembered) envelope.remembered_provider_ids.push(provider.id)
+      envelope.secrets.api_keys[provider.id] = nextApiKey
+      delete session[provider.id]
+    } else {
+      envelope.remembered_provider_ids = envelope.remembered_provider_ids.filter((id) => id !== provider.id)
+      envelope.secrets.api_keys[provider.id] = ''
+      session[provider.id] = nextApiKey
+    }
+    const catalog = writeBrowserEnvelope(envelope)
+    writeSessionKeys(session)
+    return catalog
   }
   return call<ProviderCatalog>('save_provider', { provider, apiKey })
 }
@@ -388,11 +321,16 @@ export async function deleteProvider(providerId: string): Promise<ProviderCatalo
   if (!isTauri()) {
     const envelope = readBrowserEnvelope()
     if (!envelope.settings.providers.some((provider) => provider.id === providerId)) throw new Error(`Provider "${providerId}" does not exist`)
+    const session = readSessionKeys()
     envelope.settings.providers = envelope.settings.providers.filter((provider) => provider.id !== providerId)
     envelope.settings.models = envelope.settings.models.filter((model) => model.provider_id !== providerId)
     if (envelope.settings.selected_model_id?.startsWith(`${providerId}::`)) envelope.settings.selected_model_id = null
     delete envelope.secrets.api_keys[providerId]
-    return writeBrowserEnvelope(envelope)
+    envelope.remembered_provider_ids = envelope.remembered_provider_ids.filter((id) => id !== providerId)
+    delete session[providerId]
+    const catalog = writeBrowserEnvelope(envelope)
+    writeSessionKeys(session)
+    return catalog
   }
   return call<ProviderCatalog>('delete_provider', { providerId })
 }
@@ -441,11 +379,13 @@ export async function selectModel(uniqueModelId: UniqueModelId): Promise<Provide
 export async function compileRequest(args: CompileRequestArgs): Promise<RequestPreview> {
   if (isTauri()) return call('compile_request', { args })
   const provider = activeBrowserProvider()
-  requireBrowserConversation(args.conversationId)
+  await browserData.getConversation(args.conversationId)
+  const browserMessages = await browserData.getMessages(args.conversationId)
+  const byId = new Map(browserMessages.map((message) => [message.id, message]))
   const history: Message[] = []
   let currentId = args.parentId
   while (currentId) {
-    const message = browserMessages.find((item) => item.id === currentId && item.conversation_id === args.conversationId)
+    const message = byId.get(currentId)
     if (!message || history.length > browserMessages.length) throw new Error('Invalid history branch')
     history.unshift(message)
     currentId = message.parent_id
@@ -461,9 +401,13 @@ export async function compileRequest(args: CompileRequestArgs): Promise<RequestP
   selected = selected.filter((message) => message.include_next)
   const parts = { before_current: [], inside_current: [], before_history: [], system: [] } as Record<ContextSlice['insert_at'], string[]>
   const join = (values: string[]) => values.filter((value) => value.length > 0).join(provider.context_separator)
-  for (const slice of browserConversationSlices(args.conversationId).sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))) {
+  const sourceTexts = new Map<string, string>()
+  for (const slice of await browserData.getSlices(args.conversationId)) {
     if (!slice.enabled) continue
-    const text = sliceText({ sourceId: slice.source_id, rangeType: slice.range_type, startPos: slice.start_pos, endPos: slice.end_pos, wrapper: slice.wrapper, insertAt: slice.insert_at })
+    let source = sourceTexts.get(slice.source_id)
+    if (source === undefined) { source = await browserData.sourceText(slice.source_id); sourceTexts.set(slice.source_id, source) }
+    const text = browserData.sliceText(source, { sourceId: slice.source_id, rangeType: slice.range_type,
+      startPos: slice.start_pos, endPos: slice.end_pos, wrapper: slice.wrapper, insertAt: slice.insert_at })
     const range = slice.range_type === 'lines' ? ` L${slice.start_pos}-${slice.end_pos}` : slice.range_type === 'chars' ? ` chars ${slice.start_pos}-${slice.end_pos}` : ''
     parts[slice.insert_at].push(slice.wrapper === 'labeled' ? `===== FILE: ${slice.source_name}${range} =====\n${text}` : text)
   }
@@ -522,49 +466,64 @@ function emitBrowser(payload: StreamPayload) {
   for (const listener of browserListeners) listener(payload)
 }
 
-const browserRequests = new Map<string, { cancel: () => void }>()
+const browserRequests = new Map<string, { cancel: () => void; finished: Promise<void> }>()
 
-function startBrowserStream(user: Message, text: string, emitUser: boolean): string {
-  const requestId = crypto.randomUUID()
-  const reasoning = {
-    parts: [
-      { id: 'demo-summary', kind: 'summary' as const, text: 'Browser demo: inspect the selected context and preserve one Send per request.', include_next: false },
-      { id: 'demo-text', kind: 'text' as const, text: 'Browser demo: consider an explicit initialization step before applying the smallest change.', include_next: false },
-    ],
-    tokens: null, encrypted: false,
-  }
+/** The audit row and user message are already committed when this runs. */
+function startBrowserStream(user: Message, requestId: string, preview: RequestPreview, provider: ProviderConfig, emitUser: boolean): string {
+  const controller = new AbortController()
   let content = ''
-  const finish = (cancelled: boolean) => {
-    window.clearInterval(timer)
-    browserRequests.delete(requestId)
-    const assistant: Message | undefined = content ? {
-      id: crypto.randomUUID(), conversation_id: user.conversation_id, parent_id: user.id,
-      role: 'assistant', content, reasoning, include_next: true, created_at: Date.now(),
-    } : undefined
-    if (assistant) browserMessages.push(assistant)
-    emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: cancelled ? 'cancelled' : 'done', assistant_message: assistant })
-  }
-  const timer = window.setInterval(() => {
-    const delta = text.slice(content.length, content.length + 12)
-    content += delta
-    emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: 'delta', text: delta, ...(content.length === delta.length ? { reasoning } : {}) })
-    if (content.length === text.length) finish(false)
-  }, 40)
-  browserRequests.set(requestId, { cancel: () => finish(true) })
+  let reasoning: Reasoning | null = null
   emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: 'started', user_message: emitUser ? user : undefined })
+  const finished = (async () => {
+    let status: 'completed' | 'cancelled' | 'failed' = 'completed'
+    let error = ''
+    try {
+      const result = await streamBrowserProviderRequest({
+        provider, requestJson: preview.request_json, signal: controller.signal,
+        onDelta: (delta) => {
+          content += delta.text ?? ''
+          reasoning = mergeReasoning(reasoning, delta.reasoning)
+          emitBrowser({ request_id: requestId, conversation_id: user.conversation_id, kind: 'delta',
+            ...(delta.text !== undefined ? { text: delta.text } : {}), ...(delta.reasoning ? { reasoning: delta.reasoning } : {}) })
+        },
+      })
+      content = result.content
+      reasoning = result.reasoning
+    } catch (cause) {
+      status = controller.signal.aborted ? 'cancelled' : 'failed'
+      error = cause instanceof Error ? cause.message : String(cause)
+    }
+    const assistant: Message | undefined = content || reasoning?.parts.some((part) => part.text)
+      ? { id: crypto.randomUUID(), conversation_id: user.conversation_id, parent_id: user.id,
+        role: 'assistant', content, ...(reasoning ? { reasoning } : {}), include_next: true, created_at: Date.now() }
+      : undefined
+    try {
+      await browserData.finishRequest(requestId, status, assistant)
+    } catch (cause) {
+      status = 'failed'
+      error = `Could not save provider response: ${cause instanceof Error ? cause.message : String(cause)}`
+    } finally {
+      browserRequests.delete(requestId)
+    }
+    emitBrowser({ request_id: requestId, conversation_id: user.conversation_id,
+      kind: status === 'completed' ? 'done' : status === 'cancelled' ? 'cancelled' : 'error',
+      ...(assistant ? { assistant_message: assistant } : {}), ...(error && status === 'failed' ? { error } : {}) })
+  })()
+  browserRequests.set(requestId, { cancel: () => controller.abort(), finished })
   return requestId
 }
 
 export async function cancelRequest(requestId: string): Promise<void> {
   if (isTauri()) return call<void>('cancel_request', { requestId })
-  browserRequests.get(requestId)?.cancel()
+  const request = browserRequests.get(requestId)
+  request?.cancel()
+  await request?.finished
 }
 
 export async function sendMessage(args: CompileRequestArgs): Promise<string> {
   if (isTauri()) return call<string>('send_message', { args })
-
-  await compileRequest(args)
-
+  const preview = await compileRequest(args)
+  const provider = activeBrowserProvider()
   const now = Date.now()
   const user: Message = {
     id: crypto.randomUUID(),
@@ -576,23 +535,22 @@ export async function sendMessage(args: CompileRequestArgs): Promise<string> {
     include_next: true,
     created_at: now,
   }
-  browserMessages.push(user)
-  const text = 'Browser preview simulates streaming locally. The desktop build sends the inspected JSON exactly once to the configured OpenAI-compatible endpoint.'
-  return startBrowserStream(user, text, true)
+  const requestId = crypto.randomUUID()
+  await browserData.beginRequest({ requestId, conversationId: args.conversationId, user, preview, existingUser: false })
+  return startBrowserStream(user, requestId, preview, provider, true)
 }
 
 export async function regenerateResponse(args: RegenerateArgs): Promise<string> {
   if (isTauri()) return call<string>('regenerate_response', { args })
-
-  activeBrowserProvider()
-
-  const user = browserMessages.find((message) => message.id === args.userMessageId)
+  const provider = activeBrowserProvider()
+  const user = await browserData.getMessage(args.userMessageId)
   if (!user || user.conversation_id !== args.conversationId || user.role !== 'user') {
     throw new Error('The user message for this response is no longer available')
   }
 
-  await compileRequest({ conversationId: args.conversationId, parentId: user.parent_id, input: user.content, images: user.images, historyMode: args.historyMode, sinceMessageId: args.sinceMessageId })
-
-  const text = 'This is a locally simulated regenerated response. The desktop build reuses the selected user message, sends one new provider request, and stores the result as a sibling branch.'
-  return startBrowserStream(user, text, false)
+  const preview = await compileRequest({ conversationId: args.conversationId, parentId: user.parent_id,
+    input: user.content, images: user.images, historyMode: args.historyMode, sinceMessageId: args.sinceMessageId })
+  const requestId = crypto.randomUUID()
+  await browserData.beginRequest({ requestId, conversationId: args.conversationId, user, preview, existingUser: true })
+  return startBrowserStream(user, requestId, preview, provider, false)
 }
