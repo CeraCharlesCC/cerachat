@@ -25,7 +25,7 @@ async function sendMockAnswer(page: Page, prompt: string, answer: string, plan: 
   await mockNextBrowserResponses(page, plan)
   await page.getByRole('textbox', { name: 'Message input', exact: true }).fill(prompt)
   await page.getByRole('button', { name: 'Send message', exact: true }).click()
-  await expect(page.getByText(answer, { exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Conversation messages' }).getByText(answer, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
 }
 
