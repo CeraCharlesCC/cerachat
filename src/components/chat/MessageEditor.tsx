@@ -73,7 +73,7 @@ export function MessageEditor({ message, onSave, onCancel }: {
           </div>
           <textarea aria-label={`Edited reasoning block ${index + 1}`} className="block min-h-24 w-full resize-y rounded border border-border bg-background p-2 text-sm" value={part.text} onChange={(event) => setReasoning({ ...reasoning, parts: reasoning.parts.map((p) => p.id === part.id ? { ...p, text: event.target.value } : p) })} />
         </div>)}
-        <Button size="sm" variant="outline" onClick={() => setReasoning({ ...reasoning, parts: [...reasoning.parts, { id: crypto.randomUUID(), kind: 'text', text: '', include_next: true }] })}>Add raw reasoning block</Button>
+        <Button size="sm" variant="outline" onClick={() => setReasoning({ ...reasoning, parts: [...reasoning.parts, { id: crypto.randomUUID(), kind: 'text', text: '', include_next: false }] })}>Add raw reasoning block</Button>
         <p className="m-0 text-xs text-muted-foreground">Editing creates an experimental reasoning branch; providers may ignore modified reasoning or produce different results. Protected state is never fabricated.</p>
       </fieldset>}
       <p id={hintId} className="m-0 px-1 text-xs leading-5 text-muted-foreground">Saves a new branch. Original messages and replies are kept. No request is sent.</p>

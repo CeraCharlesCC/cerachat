@@ -81,10 +81,8 @@ test('streams, folds, saves and restores reasoning separately from the answer an
   await messages.locator('details[aria-label="Response reasoning"] summary').click()
   await expect(messages.locator('details[aria-label="Response reasoning"]')).toContainText('Summary 日本語 continued')
   await expect(messages.locator('details[aria-label="Response reasoning"]')).toContainText('protected reasoning')
-  // Native Responses raw reasoning is replayable by default. Uncheck it to
-  // verify the history preview excludes unselected reasoning and the summary.
+  // Raw reasoning stays visible but is excluded from subsequent requests unless selected.
   const rawIncluded = messages.locator('details[aria-label="Response reasoning"]').getByRole('checkbox', { name: 'Include reasoning text in next request' })
-  await rawIncluded.click()
   await expect(rawIncluded).not.toBeChecked()
   await page.getByRole('textbox', { name: 'Message input', exact: true }).fill('Next question')
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
@@ -105,10 +103,7 @@ test('includes checked reasoning blocks in previews and the next send, and remem
   const summary = panel.getByRole('checkbox', { name: 'Include reasoning summary in next request' })
   const text = panel.getByRole('checkbox', { name: 'Include reasoning text in next request' })
   await expect(summary).not.toBeChecked()
-  // Unlike the former artificial fixture, a native Responses text part defaults
-  // to selected, so explicitly turn it off before testing opt-in behavior.
-  await expect(text).toBeChecked()
-  await text.click()
+  // Raw reasoning, like summaries, is opt-in even when the provider returns it.
   await expect(text).not.toBeChecked()
   await summary.click()
   await expect(summary).toBeChecked()
@@ -251,6 +246,11 @@ for (const protocol of ['openai_chat_completions', 'openai_responses'] as const)
     await original.getByRole('button', { name: 'Edit reasoning', exact: true }).click()
     const editor = page.getByRole('form', { name: 'Edit message' })
     await editor.getByRole('textbox', { name: 'Edited reasoning block 1', exact: true }).fill('  Revised plan\n日本語\n')
+    const includeEdited = editor.getByRole('checkbox', { name: 'Include edited reasoning block 1' })
+    await expect(includeEdited).not.toBeChecked()
+    await editor.getByRole('button', { name: 'Add raw reasoning block' }).click()
+    await expect(editor.getByRole('checkbox', { name: 'Include edited reasoning block 2' })).not.toBeChecked()
+    await editor.getByRole('button', { name: 'Remove block 2' }).click()
     // A reasoning-only checkpoint is a useful mid-thought intervention point.
     await editor.getByRole('textbox', { name: 'Edited message', exact: true }).fill('')
     await editor.getByRole('combobox', { name: 'Reasoning replay', exact: true }).selectOption('interleaved')
@@ -260,9 +260,20 @@ for (const protocol of ['openai_chat_completions', 'openai_responses'] as const)
     await panel.locator('summary').click()
     await expect(panel).toContainText('Interleaved mock · edited')
     await expect(panel).not.toContainText('42 tokens')
+    const include = panel.getByRole('checkbox', { name: 'Include reasoning text in next request' })
+    await expect(include).not.toBeChecked()
     await page.getByRole('textbox', { name: 'Message input', exact: true }).fill('Use the other approach')
     await page.getByRole('button', { name: 'Preview', exact: true }).click()
     const preview = page.getByRole('dialog', { name: 'Request preview' })
+    const excluded = JSON.parse((await preview.locator('pre').first().textContent())!)
+    expect(JSON.stringify(excluded)).not.toContain('Revised plan')
+    expect(JSON.stringify(excluded)).not.toContain('cerachat_intervention')
+    await preview.getByRole('button', { name: 'Close', exact: true }).click()
+
+    // Even in Interleaved mock mode, the paired tool call requires explicit opt-in.
+    await include.click()
+    await expect(include).toBeChecked()
+    await page.getByRole('button', { name: 'Preview', exact: true }).click()
     const raw = JSON.parse((await preview.locator('pre').first().textContent())!)
     expect(raw.tool_choice).toBe('none')
     expect(JSON.stringify(raw)).not.toContain('Selected reasoning text')

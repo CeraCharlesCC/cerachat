@@ -127,7 +127,7 @@ pub fn openai_delta(data: &str) -> AppResult<StreamDelta> {
             .filter(|s| !s.is_empty())
         {
             result.reasoning.parts.push(crate::models::ReasoningPart {
-                include_next: true,
+                include_next: false,
                 id: "chat-reasoning".into(),
                 kind: "text".into(),
                 text: text.into(),
@@ -171,7 +171,7 @@ impl ResponsesDecoder {
         };
         if !addition.is_empty() {
             result.reasoning.parts.push(crate::models::ReasoningPart {
-                include_next: kind == "text",
+                include_next: false,
                 id,
                 kind: kind.into(),
                 text: addition.into(),
@@ -319,12 +319,13 @@ mod tests {
         assert_eq!(delta.text.as_deref(), Some("answer"));
         assert_eq!(delta.reasoning.parts[0].text, "考え中");
         assert_eq!(delta.reasoning.parts[0].kind, "text");
-        assert!(delta.reasoning.parts[0].include_next);
+        assert!(!delta.reasoning.parts[0].include_next);
         let alias = openai_delta(
             r#"{"choices":[{"delta":{"reasoning_content":null,"reasoning":"thinking"}}]}"#,
         )
         .unwrap();
         assert_eq!(alias.reasoning.parts[0].text, "thinking");
+        assert!(!alias.reasoning.parts[0].include_next);
         let usage = openai_delta(
             r#"{"choices":[],"usage":{"completion_tokens_details":{"reasoning_tokens":42}}}"#,
         )
@@ -353,6 +354,7 @@ mod tests {
         assert_eq!(delta.reasoning.parts.len(), 2);
         assert_eq!(delta.reasoning.parts[0].kind, "summary");
         assert_eq!(delta.reasoning.parts[1].text, "steps");
+        assert!(delta.reasoning.parts.iter().all(|part| !part.include_next));
         assert!(delta.reasoning.encrypted);
         let json = serde_json::to_string(&delta.reasoning).unwrap();
         assert!(!json.contains("secret"));
@@ -378,6 +380,7 @@ mod tests {
         assert_eq!(reasoning.parts[0].text, "First summary");
         assert_eq!(reasoning.parts[1].text, "Second");
         assert_eq!(reasoning.parts[2].text, "Raw");
+        assert!(reasoning.parts.iter().all(|part| !part.include_next));
         assert!(reasoning.encrypted);
         assert_eq!(reasoning.tokens, Some(99));
     }

@@ -47,7 +47,7 @@ test('posts the inspected JSON exactly once and decodes fragmented chat SSE incl
     content: 'こんにちは',
     reasoning: {
       parts: [
-        { id: 'chat-reasoning', kind: 'text', text: '思考', include_next: true },
+        { id: 'chat-reasoning', kind: 'text', text: '思考', include_next: false },
         { id: 'chat-summary-2', kind: 'summary', text: 'Plan', include_next: false },
       ], tokens: 7, encrypted: false,
     },
@@ -85,7 +85,7 @@ test('Responses SSE merges reasoning .delta/.done and final snapshots without du
   expect(result.reasoning).toEqual({
     parts: [
       { id: 'rs-summary-0', kind: 'summary', text: 'Plan revised', include_next: false },
-      { id: 'rs-text-0', kind: 'text', text: 'Raw notes', include_next: true },
+      { id: 'rs-text-0', kind: 'text', text: 'Raw notes', include_next: false },
     ], tokens: 12, encrypted: true,
   })
 })

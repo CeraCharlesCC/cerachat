@@ -173,7 +173,7 @@ function chatDelta(value: Record<string, unknown>): BrowserTransportDelta {
   // OpenRouter can send the same reasoning in typed details and legacy fields.
   if (!parts.length) {
     const piece = asString(field(delta, 'reasoning_content')) || asString(field(delta, 'reasoning'))
-    if (piece) parts.push({ id: 'chat-reasoning', kind: 'text', text: piece, include_next: true })
+    if (piece) parts.push({ id: 'chat-reasoning', kind: 'text', text: piece, include_next: false })
   }
   const reasoning = reasoningValue(parts, tokens, encrypted)
   return { ...(text !== undefined ? { text } : {}), ...(reasoning ? { reasoning } : {}) }
@@ -191,7 +191,7 @@ class ResponsesDecoder {
     const addition = snapshot ? (text.startsWith(previous) ? text.slice(previous.length) : '') : text
     if (!addition) return
     this.seen.set(id, previous + addition)
-    parts.push({ id, kind, text: addition, include_next: kind === 'text' })
+    parts.push({ id, kind, text: addition, include_next: false })
   }
 
   private item(parts: ReasoningPart[], item: unknown, fallbackId: string): boolean {

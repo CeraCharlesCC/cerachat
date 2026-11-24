@@ -17,7 +17,7 @@ export function ReasoningContent({ reasoning, disabled = true, messageIncluded =
         {reasoning.tokens !== null && <> <span className="ml-2 text-xs tabular-nums">{reasoning.tokens.toLocaleString()} tokens</span></>}
       </summary>
       <div className="space-y-3 border-t border-border/70 px-3 py-3">
-        {reasoning.parts.length > 0 && <p className="m-0 text-xs">Checked raw blocks use Native raw by default. Choose a replay mode or edit blocks with Edit reasoning.</p>}
+        {reasoning.parts.length > 0 && <p className="m-0 text-xs">Reasoning blocks are excluded from future requests by default. Check Include next to replay a block; choose a replay mode or edit blocks with Edit reasoning.</p>}
         <div className="flex items-center justify-between gap-2 text-xs">
           <span>Replay: {reasoning.replay_mode === 'interleaved' ? 'Interleaved mock' : reasoning.replay_mode === 'text' ? 'Assistant notes' : 'Native raw'}{reasoning.edited ? ' · edited' : ''}</span>
           {onEdit && <button type="button" className="rounded border border-border px-2 py-1 hover:bg-muted" disabled={disabled} onClick={onEdit}>Edit reasoning</button>}
