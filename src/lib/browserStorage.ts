@@ -42,6 +42,8 @@ export const execute = (sql: string, bind: SqlBind = []) => request<void>('execu
 export const transaction = (statements: Statement[]) => request<void>('batch', { statements })
 export const addSource = (id: string, conversationId: string, name: string, text: string) =>
   request<WorkspaceSource>('addSource', { id, conversationId, name, text })
+export const importSourceFiles = (conversationId: string, files: File[]) =>
+  request<WorkspaceSource[]>('importSourceFiles', { conversationId, files })
 export const getSourceText = (sourceId: string) => request<string>('sourceText', { sourceId })
 export const exportSnapshot = () => request<Uint8Array>('export')
 export const importSnapshot = (bytes: Uint8Array) => request<void>('import', { bytes })

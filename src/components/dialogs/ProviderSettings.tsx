@@ -45,20 +45,22 @@ function errorText(reason: unknown): string {
 
 export interface ProviderSettingsProps {
   catalog: ProviderCatalog
+  initialModelId?: string | null
   onCatalogChange: (catalog: ProviderCatalog) => void
   onClose: () => void
 }
 
-export function ProviderSettings({ catalog, onCatalogChange, onClose }: ProviderSettingsProps) {
-  const firstProvider = catalog.providers[0] ?? null
+export function ProviderSettings({ catalog, initialModelId, onCatalogChange, onClose }: ProviderSettingsProps) {
+  const initialModel = catalog.models.find(model => makeUniqueModelId(model.provider_id, model.model_id) === initialModelId)
+  const firstProvider = catalog.providers.find(provider => provider.id === initialModel?.provider_id) ?? catalog.providers[0] ?? null
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(firstProvider?.id ?? null)
   const [providerDraft, setProviderDraft] = useState<ProviderProfile | null>(firstProvider ? { ...firstProvider } : null)
   const [providerPersisted, setProviderPersisted] = useState(Boolean(firstProvider))
   const [apiKey, setApiKey] = useState('')
   const [rememberBrowserKey, setRememberBrowserKey] = useState(() => firstProvider ? browserProviderKeyPersistence(firstProvider.id) : false)
   const [clearApiKey, setClearApiKey] = useState(false)
-  const [modelDraft, setModelDraft] = useState<ModelDraft | null>(null)
-  const [modelPersisted, setModelPersisted] = useState(false)
+  const [modelDraft, setModelDraft] = useState<ModelDraft | null>(() => initialModel ? toModelDraft(initialModel) : null)
+  const [modelPersisted, setModelPersisted] = useState(Boolean(initialModel))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [providerTab, setProviderTab] = useState('connection')

@@ -30,6 +30,7 @@ import {
   deleteConversation,
   getMessages,
   getSourceLines,
+  importBrowserSources,
   importSources,
   isTauri,
   removeSource,
@@ -95,6 +96,7 @@ export default function App() {
   const [readingImages, setReadingImages] = useState(false)
   const [preview, setPreview] = useState<RequestPreview | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsModelId, setSettingsModelId] = useState<string | null>(null)
   const [backupOpen, setBackupOpen] = useState(false)
   const [viewerSource, setViewerSource] = useState<WorkspaceSource | null>(null)
   const [editingMessage, setEditingMessage] = useState<Message | null>(null)
@@ -312,14 +314,18 @@ export default function App() {
   }
 
   const handleAddImages = async (files: File[]) => {
-    if (!conversationId || readingImages || busy || streaming || editingMessage) return
+    if (!files.length || readingImages || busy || streaming || editingMessage) return
     if (!activeModel?.image_input) { setError(IMAGE_INPUT_HELP); return }
     setError(null)
     setReadingImages(true)
-    const chatId = conversationId
     try {
       if (images.length + files.length > MAX_IMAGES) throw new Error('Attach at most 4 images per message.')
       const added = await readImages(files)
+      const chatId = conversationId ?? (await createConversation()).id
+      if (!conversationId) {
+        await refreshBootstrap()
+        setConversationId(chatId)
+      }
       setImageDrafts((current) => ({ ...current, [chatId]: [...(current[chatId] ?? []), ...added] }))
       setPreview(null)
     } catch (reason) { setError(String(reason)) }
@@ -421,8 +427,7 @@ export default function App() {
   })
 
   const handleImport = async () => {
-    if (!conversationId || busy || streaming) return
-    if (!isTauri()) { setError('File import is available in the desktop build. Use Paste text in browser preview.'); return }
+    if (!conversationId || busy || streaming || !isTauri()) return
     try {
       const chosen = await open({ multiple: true, directory: false, filters: [{ name: 'Text or ZIP', extensions: ['txt', 'md', 'json', 'log', 'csv', 'zip'] }] })
       if (!chosen) return
@@ -432,6 +437,16 @@ export default function App() {
         if (autoInclude) for (const source of sources) await includeSource(source)
       })
     } catch (reason) { setError(String(reason)) }
+  }
+
+  const handleBrowserImport = (files: File[]) => {
+    if (!files.length || readingImages) return
+    void mutateContext(async () => {
+      const chatId = conversationId ?? (await createConversation()).id
+      const sources = await importBrowserSources(chatId, files)
+      if (autoInclude) for (const source of sources) await includeSource(source)
+      setConversationId(chatId)
+    })
   }
 
   if (!state) return (
@@ -476,7 +491,7 @@ export default function App() {
 
       <ThreadSidebar
         open={threadsOpen}
-        disabled={busy || Boolean(streaming)}
+        disabled={busy || readingImages || Boolean(streaming)}
         conversations={state.conversations}
         conversationId={conversationId}
         messages={messages}
@@ -609,6 +624,10 @@ export default function App() {
           input={input}
           images={images}
           imageInputEnabled={Boolean(activeModel?.image_input)}
+          onConfigureImages={hasActiveModel && !activeModel?.image_input ? () => {
+            setSettingsModelId(catalog?.selected_model_id ?? null)
+            setSettingsOpen(true)
+          } : undefined}
           imageWarning={imageWarning}
           imageCount={images.length + historyImageCount}
           readingImages={readingImages}
@@ -640,7 +659,8 @@ export default function App() {
         sources={chatSources}
         slices={orderedSlices}
         workspaceTokens={workspaceTokens}
-        busy={!conversationId || busy || Boolean(streaming)}
+        busy={!conversationId || busy || readingImages || Boolean(streaming)}
+        importDisabled={busy || readingImages || Boolean(streaming) || (isTauri() && !conversationId)}
         wrapper={attachmentWrapper}
         insertAt={attachmentPosition}
         autoInclude={autoInclude}
@@ -651,6 +671,7 @@ export default function App() {
         onReference={() => setReferenceOpen(true)}
         onReorder={(draggedId, targetId) => void reorderSlices(draggedId, targetId)}
         onImport={() => void handleImport()}
+        onImportFiles={isTauri() ? undefined : handleBrowserImport}
         onAddAll={() => void addAllSources()}
         onOpenSource={setViewerSource}
         onAddSource={(source) => void mutateContext(() => includeSource(source))}
@@ -660,7 +681,7 @@ export default function App() {
         onMoveSlice={moveSlice}
       />
 
-      {settingsOpen && <ProviderSettings catalog={state.provider_catalog} onClose={() => setSettingsOpen(false)} onCatalogChange={updateCatalog} />}
+      {settingsOpen && <ProviderSettings catalog={state.provider_catalog} initialModelId={settingsModelId} onClose={() => { setSettingsOpen(false); setSettingsModelId(null) }} onCatalogChange={updateCatalog} />}
       {!isTauri() && backupOpen && <BrowserBackupDialog catalog={state.provider_catalog} disabled={busy || Boolean(streaming)} onClose={() => setBackupOpen(false)} />}
       {preview && <RequestInspector preview={preview} onClose={() => setPreview(null)} />}
       {referenceOpen && conversationId && <ReferenceSourceDialog

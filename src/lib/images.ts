@@ -25,14 +25,27 @@ export function validateImages(images: ImageAttachment[]) {
 export async function readImages(files: File[]): Promise<ImageAttachment[]> {
   if (files.length > MAX_IMAGES) throw new Error('Attach at most 4 images per message.')
   return Promise.all(files.map(async (file) => {
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('Use PNG, JPEG, or WebP images.')
     if (!file.size || file.size > MAX_IMAGE_BYTES) throw new Error('Each image must contain 1 byte to 5 MiB.')
+    // File.type is supplied by the OS/browser and may be empty or generic.
+    // Infer the canonical MIME type from bytes, not the extension.
+    const header = new Uint8Array(await file.slice(0, 12).arrayBuffer())
+    const magic = String.fromCharCode(...header)
+    const mime = magic.startsWith('\x89PNG\r\n\x1a\n') ? 'image/png'
+      : magic.startsWith('\xff\xd8\xff') ? 'image/jpeg'
+        : magic.startsWith('RIFF') && magic.slice(8, 12) === 'WEBP' ? 'image/webp' : null
+    if (!mime) {
+      if (['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('Image format does not match its file contents.')
+      throw new Error('Use PNG, JPEG, or WebP images.')
+    }
+    if (['image/png', 'image/jpeg', 'image/webp'].includes(file.type) && file.type !== mime) {
+      throw new Error('Image format does not match its file contents.')
+    }
     const data_url = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => resolve(String(reader.result))
       reader.onerror = () => reject(new Error(`Could not read ${file.name}`))
       reader.onabort = () => reject(new Error(`Reading ${file.name} was cancelled`))
-      reader.readAsDataURL(file)
+      reader.readAsDataURL(file.slice(0, file.size, mime))
     })
     const image = { name: file.name, data_url }
     validateImages([image])

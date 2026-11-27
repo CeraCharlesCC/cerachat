@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import * as browserData from './browserData'
+import { importSourceFiles } from './browserStorage'
 import { estimateTokens } from './utils'
 import { auditHistory, historyContent, historyMessage, interleaveHistory, interventionTool, mergeReasoning, wireHistory } from './reasoning'
 import { streamBrowserProviderRequest } from './browserTransport'
@@ -257,6 +258,12 @@ export async function reorderContextSlices(conversationId: string, sliceIds: str
 export async function importSources(conversationId: string, paths: string[]): Promise<WorkspaceSource[]> {
   if (!isTauri()) throw new Error('File import is available in the desktop app')
   return call<WorkspaceSource[]>('import_sources', { conversationId, paths })
+}
+
+export async function importBrowserSources(conversationId: string, files: File[]): Promise<WorkspaceSource[]> {
+  if (isTauri()) throw new Error('Use the desktop file picker')
+  await browserData.getConversation(conversationId)
+  return importSourceFiles(conversationId, files)
 }
 
 export async function referenceSource(conversationId: string, sourceId: string): Promise<WorkspaceSource> {

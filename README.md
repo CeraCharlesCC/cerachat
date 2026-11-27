@@ -17,6 +17,8 @@ CeraChat is a local-first chat client for OpenAI-compatible APIs, available as a
 
 In **Provider settings**, add an API endpoint and model (and an API key if required). Create a chat, choose any context to include, preview the request, and send.
 
+In the browser, **Add files** (or drop files in the Context panel) imports TXT, MD, JSON, LOG, CSV, and supported text entries in ZIPs into the existing local SQLite/OPFS workspace. Text must be UTF-8 or BOM-marked UTF-16; imports are limited to 16 MiB per text file and 64 MiB / 256 files per batch. For images, enable image input for a compatible model in **Provider settings**, then choose, paste, or drop PNG, JPEG, or WebP images (up to four, 5 MiB each) in the composer. Imported sources and sent images are included in local workspace backups.
+
 ## Development
 
 Use **Node.js 22**. To run the browser edition locally:

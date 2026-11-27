@@ -2,6 +2,7 @@
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm'
 import { init as initZstd, compress, decompress } from '@bokuweb/zstd-wasm'
 import type { Database, SAHPoolUtil } from '@sqlite.org/sqlite-wasm'
+import { readBrowserSourceFiles, type BrowserSourceFile } from './browserFiles'
 
 const DB_NAME = '/cerachat.sqlite3'
 const SCHEMA_VERSION = 1
@@ -182,25 +183,43 @@ function inTransaction(statements: Statement[]) {
     db.exec('COMMIT')
   } catch (error) { db.exec('ROLLBACK'); throw error }
 }
+async function addSources(conversationId: string, sources: (BrowserSourceFile & { id: string })[]) {
+  const prepared = await Promise.all(sources.map(async source => {
+    const raw = textEncoder.encode(source.text)
+    const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', raw))
+    const hash = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('')
+    return { ...source, raw, hash }
+  }))
+  const result: Record<string, unknown>[] = []
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    for (const { id, name, originPath, archivePath, text, raw, hash } of prepared) {
+      const existing = rows(`SELECT w.*,b.original_size FROM workspace_sources w JOIN blobs b ON b.hash=w.blob_hash
+        WHERE w.conversation_id=? AND w.display_name=? AND w.origin_path=? AND w.archive_path IS ? AND w.blob_hash=?`,
+      [conversationId, name, originPath, archivePath, hash])[0]
+      if (existing) { result.push(existing); continue }
+      if (!rows('SELECT hash FROM blobs WHERE hash=?', [hash]).length) {
+        run({ sql: 'INSERT INTO blobs(hash,data,original_size) VALUES(?,?,?)', bind: [hash, compress(raw, 3), raw.length] })
+      }
+      run({ sql: `INSERT INTO workspace_sources(id,conversation_id,display_name,origin_path,archive_path,blob_hash,line_count,created_at)
+        VALUES(?,?,?,?,?,?,?,?)`, bind: [id, conversationId, name, originPath, archivePath, hash, text ? text.split('\n').length : 0, Date.now()] })
+      result.push(rows(`SELECT w.*,b.original_size FROM workspace_sources w JOIN blobs b ON b.hash=w.blob_hash WHERE w.id=?`, [id])[0])
+    }
+    db.exec('COMMIT')
+    return result
+  } catch (error) { db.exec('ROLLBACK'); throw error }
+}
+
 async function addSource(args: Record<string, unknown>) {
-  const id = args.id as string
-  const conversationId = args.conversationId as string
-  const name = args.name as string
-  const sourceText = args.text as string
-  const raw = textEncoder.encode(sourceText)
-  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', raw))
-  const hash = [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')
-  const existing = rows(`SELECT w.*,b.original_size FROM workspace_sources w JOIN blobs b ON b.hash=w.blob_hash WHERE w.conversation_id=? AND w.display_name=?
-    AND w.origin_path='pasted-text' AND w.blob_hash=?`, [conversationId, name, hash])[0]
-  if (existing) return existing
-  const blob = compress(raw, 3)
-  const now = Date.now()
-  inTransaction([
-    { sql: 'INSERT OR IGNORE INTO blobs(hash,data,original_size) VALUES(?,?,?)', bind: [hash, blob, raw.length] },
-    { sql: `INSERT INTO workspace_sources(id,conversation_id,display_name,origin_path,archive_path,blob_hash,line_count,created_at)
-      VALUES(?,?,?,'pasted-text',NULL,?,?,?)`, bind: [id, conversationId, name, hash, sourceText.split('\n').length, now] },
-  ])
-  return rows(`SELECT w.*,b.original_size FROM workspace_sources w JOIN blobs b ON b.hash=w.blob_hash WHERE w.id=?`, [id])[0]
+  return (await addSources(args.conversationId as string, [{
+    id: args.id as string, name: args.name as string, text: args.text as string,
+    originPath: 'pasted-text', archivePath: null,
+  }]))[0]
+}
+
+async function importSourceFiles(args: Record<string, unknown>) {
+  const sources = await readBrowserSourceFiles(args.files as File[])
+  return addSources(args.conversationId as string, sources.map(source => ({ ...source, id: crypto.randomUUID() })))
 }
 function readSource(sourceId: string): string {
   const row = rows(`SELECT b.data,b.original_size FROM workspace_sources w JOIN blobs b ON b.hash=w.blob_hash WHERE w.id=?`, [sourceId])[0]
@@ -263,6 +282,7 @@ scope.onmessage = ({ data: message }) => {
         case 'execute': run({ sql: args.sql as string, bind: args.bind as SqlBind | undefined }); break
         case 'batch': inTransaction(args.statements as Statement[]); break
         case 'addSource': result = await addSource(args); break
+        case 'importSourceFiles': result = await importSourceFiles(args); break
         case 'sourceText': result = readSource(args.sourceId as string); break
         case 'export': result = sqlite3.capi.sqlite3_js_db_export(db.pointer!); break
         case 'import': await importSnapshot(args.bytes as Uint8Array); break

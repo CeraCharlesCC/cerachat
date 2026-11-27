@@ -7,12 +7,13 @@ import { ImageAttachments } from './ImageAttachments'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 
-export function Composer({ height, textareaRef, input, images, imageInputEnabled, imageWarning, imageCount, readingImages, onAddImages, onRemoveImage, historyMode, sinceMessageId, path, historyTokens, workspaceTokens, canCompile, busy, streaming, stopping, editing, onInputChange, onHistoryModeChange, onSinceMessageChange, onPreview, onSend, onStop }: {
+export function Composer({ height, textareaRef, input, images, imageInputEnabled, onConfigureImages, imageWarning, imageCount, readingImages, onAddImages, onRemoveImage, historyMode, sinceMessageId, path, historyTokens, workspaceTokens, canCompile, busy, streaming, stopping, editing, onInputChange, onHistoryModeChange, onSinceMessageChange, onPreview, onSend, onStop }: {
   height: number
   textareaRef: RefObject<HTMLTextAreaElement>
   input: string
   images: ImageAttachment[]
   imageInputEnabled: boolean
+  onConfigureImages?: () => void
   imageWarning: string | null
   imageCount: number
   readingImages: boolean
@@ -71,7 +72,7 @@ export function Composer({ height, textareaRef, input, images, imageInputEnabled
           if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); if (!attachmentsDisabled) onAddImages(Array.from(event.dataTransfer.files)) }
         }} aria-label="Send message" onSubmit={(event) => { event.preventDefault(); if (canCompile) onSend() }} className="flex min-h-0 flex-1 flex-col rounded-2xl border border-input bg-card p-2 shadow-sm transition-colors focus-within:border-ring">
           <ImageAttachments images={images} disabled={attachmentsDisabled} onRemove={onRemoveImage} />
-          <input ref={fileRef} type="file" multiple accept="image/png,image/jpeg,image/webp" aria-label="Choose images" className="hidden" disabled={!imageInputEnabled || attachmentsDisabled} onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) onAddImages(files) }} />
+          <input ref={fileRef} type="file" multiple accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" aria-label="Choose images" className="hidden" disabled={!imageInputEnabled || attachmentsDisabled} onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) onAddImages(files) }} />
           <textarea
             ref={textareaRef}
             className="scroll-stable block min-h-0 w-full flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2 text-[15px] leading-6 text-card-foreground outline-none placeholder:text-muted-foreground"
@@ -89,7 +90,9 @@ export function Composer({ height, textareaRef, input, images, imageInputEnabled
           />
           <div className="mt-1 flex shrink-0 items-end justify-between gap-2">
             <IconButton type="button" aria-label="Attach images" title={imageInputEnabled ? 'Attach images · PNG, JPEG, WebP · up to 4 × 5 MiB' : IMAGE_INPUT_HELP} disabled={!imageInputEnabled || attachmentsDisabled || images.length >= 4} onClick={() => fileRef.current?.click()}>{readingImages ? <LoaderCircle size={16} className="animate-spin" /> : <ImagePlus size={16} />}</IconButton>
-            <span className="min-w-0 truncate px-3 pb-2 text-xs tabular-nums text-muted-foreground" title={editing ? 'Finish editing the message above. Your unsent draft is kept here.' : `${input.length.toLocaleString()} characters`}>{editing ? 'Editing message · draft kept' : `${input.length.toLocaleString()} chars`}</span>
+            {onConfigureImages && !editing
+              ? <button type="button" className="min-w-0 truncate pb-2 text-left text-xs text-muted-foreground underline underline-offset-2" disabled={attachmentsDisabled} onClick={onConfigureImages} title={IMAGE_INPUT_HELP}>Image input off · Configure</button>
+              : <span className="min-w-0 truncate px-3 pb-2 text-xs tabular-nums text-muted-foreground" title={editing ? 'Finish editing the message above. Your unsent draft is kept here.' : `${input.length.toLocaleString()} characters`}>{editing ? 'Editing message · draft kept' : `${input.length.toLocaleString()} chars`}</span>}
             <div className="flex items-center gap-1.5">
               <Button variant="ghost" size="sm" disabled={!canCompile} onClick={onPreview}>Preview</Button>
               <IconButton

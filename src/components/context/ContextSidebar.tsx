@@ -1,5 +1,5 @@
 import { FileText, FolderPlus, GripVertical, ClipboardPaste, Plus, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState, type DragEvent } from 'react'
 import type { ContextSlice, InsertAt, WorkspaceSource, WrapperMode } from '../../types'
 import { formatBytes, formatTokens } from '../../lib/utils'
 import { Button } from '../ui/Button'
@@ -21,6 +21,8 @@ type ContextSidebarProps = {
   onInsertAtChange: (insertAt: InsertAt) => void
   onAutoIncludeChange: (enabled: boolean) => void
   onImport: () => void
+  onImportFiles?: (files: File[]) => void
+  importDisabled: boolean
   onPaste: () => void
   onReference: () => void
   onAddAll: () => void
@@ -33,7 +35,15 @@ type ContextSidebarProps = {
   onReorder: (draggedId: string, targetId: string) => void
 }
 
-export function ContextSidebar({ open, sources, slices, workspaceTokens, busy, wrapper, insertAt, autoInclude, onWrapperChange, onInsertAtChange, onAutoIncludeChange, onImport, onPaste, onReference, onAddAll, onOpenSource, onAddSource, onRemoveSource, onChangeSlice, onDeleteSlice, onMoveSlice, onReorder }: ContextSidebarProps) {
+export function ContextSidebar({ open, sources, slices, workspaceTokens, busy, wrapper, insertAt, autoInclude, onWrapperChange, onInsertAtChange, onAutoIncludeChange, onImport, onImportFiles, importDisabled, onPaste, onReference, onAddAll, onOpenSource, onAddSource, onRemoveSource, onChangeSlice, onDeleteSlice, onMoveSlice, onReorder }: ContextSidebarProps) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const handleFileDrop = (event: DragEvent<HTMLElement>) => {
+    if (!onImportFiles || !event.dataTransfer.types.includes('Files')) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.type === 'dragover') event.dataTransfer.dropEffect = importDisabled ? 'none' : 'copy'
+    else if (!importDisabled) onImportFiles(Array.from(event.dataTransfer.files))
+  }
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [targetId, setTargetId] = useState<string | null>(null)
   const [preferredLibraryHeight, setLibraryHeight] = usePanelSize('source-library', 224)
@@ -41,14 +51,19 @@ export function ContextSidebar({ open, sources, slices, workspaceTokens, busy, w
   const libraryMax = Math.max(96, Math.min(viewport.height * 0.4, viewport.height - 460))
   const libraryHeight = Math.min(libraryMax, Math.max(96, preferredLibraryHeight))
   return (
-    <aside id="context-panel" className={`panel flex min-h-0 min-w-0 flex-col max-[1100px]:fixed max-[1100px]:inset-y-0 max-[1100px]:right-0 max-[1100px]:z-40 max-[1100px]:w-[min(380px,92vw)] max-[1100px]:shadow-[var(--shadow)] max-[1100px]:transition-transform ${open ? 'max-[1100px]:translate-x-0' : 'min-[1101px]:hidden max-[1100px]:invisible max-[1100px]:translate-x-[105%]'}`}>
+    <aside id="context-panel" onDragOver={handleFileDrop} onDrop={handleFileDrop} className={`panel flex min-h-0 min-w-0 flex-col max-[1100px]:fixed max-[1100px]:inset-y-0 max-[1100px]:right-0 max-[1100px]:z-40 max-[1100px]:w-[min(380px,92vw)] max-[1100px]:shadow-[var(--shadow)] max-[1100px]:transition-transform ${open ? 'max-[1100px]:translate-x-0' : 'min-[1101px]:hidden max-[1100px]:invisible max-[1100px]:translate-x-[105%]'}`}>
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-border/60 px-4">
         <h2 className="m-0 text-base font-semibold tracking-tight">Context</h2>
         <span className="text-xs tabular-nums text-muted-foreground">{slices.filter((slice) => slice.enabled).length} included · ~{formatTokens(workspaceTokens)}</span>
       </header>
       <div className="shrink-0 space-y-3 border-b border-border/60 p-4">
         <div className="grid grid-cols-2 gap-2">
-          <Button variant="outline" size="sm" disabled={busy} onClick={onImport}><FolderPlus size={15} /> Add files</Button>
+          {onImportFiles && <input ref={fileRef} type="file" multiple accept=".txt,.md,.json,.log,.csv,.zip" aria-label="Choose context files" className="hidden" disabled={importDisabled} onChange={event => {
+            const files = Array.from(event.currentTarget.files ?? [])
+            event.currentTarget.value = ''
+            if (!importDisabled && files.length) onImportFiles(files)
+          }} />}
+          <Button variant="outline" size="sm" disabled={importDisabled} onClick={() => onImportFiles ? fileRef.current?.click() : onImport()} title="Import TXT, MD, JSON, LOG, CSV or ZIP"><FolderPlus size={15} /> Add files</Button>
           <Button variant="outline" size="sm" disabled={busy} onClick={onPaste}><ClipboardPaste size={15} /> Paste text</Button>
         </div>
         <Button variant="ghost" size="sm" className="w-full" disabled={busy} onClick={onReference}>Add from another chat</Button>
@@ -75,7 +90,7 @@ export function ContextSidebar({ open, sources, slices, workspaceTokens, busy, w
               <IconButton className="size-7" disabled={busy} variant="destructive" aria-label={`Remove ${source.display_name}`} title="Remove source" onClick={() => onRemoveSource(source)}><Trash2 size={14} /></IconButton>
             </div>
           })}
-          {sources.length === 0 && <p className="m-0 px-2 py-2 text-xs text-muted-foreground">Add text files, a ZIP, or paste text.</p>}
+          {sources.length === 0 && <p className="m-0 px-2 py-2 text-xs text-muted-foreground">{onImportFiles ? 'Add or drop text files or ZIPs here, or paste text.' : 'Add text files, a ZIP, or paste text.'}</p>}
           {sources.length > 0 && <Button variant="ghost" size="sm" className="mt-1 w-full" disabled={busy} onClick={onAddAll}>Include all sources</Button>}
         </div>
         <ResizeHandle label="Resize source library" controls="source-library" orientation="horizontal" value={libraryHeight} min={96} max={libraryMax} onChange={setLibraryHeight} onReset={() => setLibraryHeight(224)} />
