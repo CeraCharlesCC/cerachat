@@ -440,7 +440,13 @@ export default function App() {
         <div className="max-w-xl rounded-2xl border border-destructive/30 bg-card p-6">
           <h1 className="mt-0 text-lg font-semibold text-foreground">Could not open local workspace</h1>
           <p className="break-words text-destructive" role="alert">{error}</p>
-          <Button variant="outline" onClick={() => { setError(null); void refreshBootstrap().catch((reason) => setError(String(reason))) }}>Retry</Button>
+          <Button variant="outline" onClick={() => {
+            // The browser Worker owns a one-shot initialization promise. A
+            // reload starts a new Worker and retries acquisition of the OPFS lock.
+            if (!isTauri()) { window.location.reload(); return }
+            setError(null)
+            void refreshBootstrap().catch((reason) => setError(String(reason)))
+          }}>Retry</Button>
         </div>
       ) : 'Opening local workspace…'}
     </div>

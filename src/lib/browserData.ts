@@ -213,8 +213,12 @@ export async function deleteContextSlice(sliceId: string) {
 export async function beginRequest(args: { requestId: string; conversationId: string; user: Message; preview: RequestPreview; existingUser: boolean }) {
   const slices = await query<{ blob_hash: string }>(`SELECT DISTINCT w.blob_hash FROM context_slices s
     JOIN workspace_sources w ON w.id=s.source_id WHERE w.conversation_id=? AND s.enabled=1`, [args.conversationId])
+  // Match desktop chat naming: use the first nonblank user message, truncated
+  // to 50 Unicode code points, without overwriting an existing title.
+  const title = Array.from(args.user.content).slice(0, 50).join('')
   const statements: Statement[] = [
     ...(!args.existingUser ? [sqlMessage(args.user)] : []),
+    ...(!args.existingUser && title.trim() ? [{ sql: "UPDATE conversations SET title=? WHERE id=? AND title='New chat'", bind: [title, args.conversationId] }] : []),
     { sql: `INSERT INTO request_logs(id,conversation_id,user_message_id,assistant_message_id,request_sha256,compiled_prompt,actual_request_json,created_at,browser_status)
       VALUES(?,?,?,NULL,?,?,?,?, 'pending')`,
     bind: [args.requestId, args.conversationId, args.user.id, args.preview.request_sha256,
@@ -226,7 +230,7 @@ export async function beginRequest(args: { requestId: string; conversationId: st
 }
 export async function finishRequest(requestId: string, status: 'completed' | 'cancelled' | 'failed', assistant?: Message) {
   await transaction([
-    ...(assistant ? [sqlMessage(assistant)] : []),
+    ...(assistant ? [sqlMessage(assistant), { sql: 'UPDATE conversations SET updated_at=? WHERE id=?', bind: [assistant.created_at, assistant.conversation_id] }] : []),
     { sql: 'UPDATE request_logs SET browser_status=?,assistant_message_id=? WHERE id=?', bind: [status, assistant?.id ?? null, requestId] },
   ])
 }

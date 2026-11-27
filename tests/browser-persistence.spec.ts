@@ -76,13 +76,17 @@ test('audits the exact request before network, and preserves completed branch af
     const storage = await import('/src/lib/browserStorage.ts')
     const logs = await storage.query<{actual_request_json:string;browser_status:string;assistant_message_id:string}>(
       'SELECT actual_request_json,browser_status,assistant_message_id FROM request_logs WHERE id=?', [requestId])
-    return { messages: await backend.getMessages(conversationId), logs }
+    const state = await backend.bootstrap()
+    return { messages: await backend.getMessages(conversationId), logs,
+      conversation: state.conversations.find(row => row.id === conversationId) }
   }, { requestId: result.requestId, conversationId: configuration.conversation.id })
   expect(after.messages.map((row) => row.role)).toEqual(['user', 'assistant'])
   expect(after.messages[1].content).toBe('Real reply')
   expect(after.logs[0].browser_status).toBe('completed')
   expect(after.logs[0].actual_request_json).toBe(configuration.preview.request_json)
   expect(after.logs[0].assistant_message_id).toBe(after.messages[1].id)
+  expect(after.conversation?.title).toBe('hello browser')
+  expect(after.conversation?.updated_at).toBe(after.messages[1].created_at)
 })
 
 test('another tab cannot open the same origin database for writing', async ({ page, context }) => {
@@ -124,4 +128,63 @@ test('marks in-flight audits interrupted after reload, without re-sending provid
   }, requestId)
   expect(rows).toEqual([{ browser_status: 'interrupted', actual_request_json: '{"model":"stub"}' }])
   expect(providerRequests).toEqual([])
+})
+
+test('Retry reopens the workspace after the owning tab closes', async ({ page, context }) => {
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: 'New chat', exact: true })).toBeVisible()
+  const other = await context.newPage()
+  await other.goto('/')
+  await expect(other.getByRole('alert')).toContainText('in use by another tab')
+  await page.close()
+  await other.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(other.getByRole('button', { name: 'New chat', exact: true })).toBeVisible({ timeout: 5000 })
+  await expect(other.getByRole('alert')).toHaveCount(0)
+})
+
+test('an in-flight request uses the same provider configuration for compilation and transport', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: 'New chat', exact: true })).toBeVisible()
+  const result = await page.evaluate(async () => {
+    const backend = await import('/src/lib/backend.ts')
+    const conversation = await backend.createConversation()
+    for (const id of ['first', 'second']) {
+      await backend.saveProvider({ id, name: id, protocol: 'openai_chat_completions',
+        base_url: `${location.origin}/${id}`, api_key_storage: 'plain_portable', system_text: '', context_separator: '\n' }, `${id}-key`)
+      await backend.saveModel({ provider_id: id, model_id: `${id}-model`, name: id,
+        context_window: 5000, max_output_tokens: 300, temperature: null, raw_json_overrides: '{}' })
+    }
+    await backend.selectModel('first::first-model')
+    const originalFetch = window.fetch
+    const calls: { url: string; key: string | null; model: string }[] = []
+    window.fetch = async (url, init) => {
+      calls.push({ url: String(url), key: new Headers(init?.headers).get('Authorization'), model: JSON.parse(String(init?.body)).model })
+      return new Response('data: {"choices":[{"delta":{"content":"reply"}}]}\n\ndata: [DONE]\n\n')
+    }
+    try {
+      const run = async (start: () => Promise<string>) => {
+        await backend.selectModel('first::first-model')
+        let complete!: () => void
+        let fail!: (error: Error) => void
+        const completed = new Promise<void>((resolve, reject) => { complete = resolve; fail = reject })
+        const unsubscribe = await backend.subscribeStream(payload => {
+          if (payload.kind === 'done') complete()
+          if (payload.kind === 'error') fail(new Error(payload.error))
+        })
+        try {
+          const request = start()
+          // Compilation awaits SQLite. A changed selection must not redirect the
+          // already-started request (or attach a different provider's secret).
+          await backend.selectModel('second::second-model')
+          await request
+          await completed
+        } finally { unsubscribe() }
+      }
+      await run(() => backend.sendMessage({ conversationId: conversation.id, parentId: null, input: 'hello', historyMode: 'no_history' }))
+      const user = (await backend.getMessages(conversation.id)).find(message => message.role === 'user')!
+      await run(() => backend.regenerateResponse({ conversationId: conversation.id, userMessageId: user.id, historyMode: 'no_history' }))
+      return { calls, origin: location.origin }
+    } finally { window.fetch = originalFetch }
+  })
+  expect(result.calls).toEqual(Array(2).fill({ url: `${result.origin}/first/chat/completions`, key: 'Bearer first-key', model: 'first-model' }))
 })

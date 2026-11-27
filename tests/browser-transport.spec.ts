@@ -196,3 +196,48 @@ test('flushes a final unterminated event and reports Responses failures', async 
   expect(actual.success).toEqual({ content: 'tail', reasoning: null })
   expect(actual.failure).toContain('quota')
 })
+
+test('Responses recovers answer and refusal text from done and final snapshots without duplicating deltas', async ({ page }) => {
+  await page.goto('/')
+  const result = await page.evaluate(async () => {
+    const { streamBrowserProviderRequest } = await import('/src/lib/browserTransport.ts')
+    const events = [
+      { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'Hello' },
+      { type: 'response.output_text.done', item_id: 'msg', output_index: 0, content_index: 0, text: 'Hello world' },
+      { type: 'response.refusal.done', item_id: 'msg', content_index: 1, refusal: ' No further details.' },
+      { type: 'response.output_item.done', item: { id: 'msg', type: 'message', content: [{ type: 'output_text', text: 'Hello world' }, { type: 'refusal', refusal: ' No further details.' }] } },
+      { type: 'response.completed', response: { output: [{ id: 'msg', type: 'message', content: [{ type: 'output_text', text: 'Hello world' }, { type: 'refusal', refusal: ' No further details.' }] }, { id: 'msg2', type: 'message', content: [{ type: 'output_text', text: ' Final.' }] }] } },
+    ]
+    const original = window.fetch
+    window.fetch = async () => new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''))
+    try {
+      const fragments: string[] = []
+      const result = await streamBrowserProviderRequest({ provider: { base_url: 'https://example.test/v1', protocol: 'openai_responses', api_key: '' },
+        requestJson: '{}', onDelta: delta => { if (delta.text) fragments.push(delta.text) } })
+      return { result, fragments }
+    } finally { window.fetch = original }
+  })
+  expect(result.result.content).toBe('Hello world No further details. Final.')
+  expect(result.fragments.join('')).toBe(result.result.content)
+})
+
+test('malformed SSE cancels the unread response body rather than leaving a live connection', async ({ page }) => {
+  await page.goto('/')
+  const result = await page.evaluate(async () => {
+    const { streamBrowserProviderRequest } = await import('/src/lib/browserTransport.ts')
+    const original = window.fetch
+    let cancelled = false
+    window.fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('data: {bad-json}\n\n')) },
+      cancel() { cancelled = true },
+    }))
+    try {
+      let error = ''
+      try { await streamBrowserProviderRequest({ provider: { base_url: 'https://example.test/v1', protocol: 'openai_chat_completions', api_key: '' }, requestJson: '{}' }) }
+      catch (cause) { error = String(cause) }
+      return { error, cancelled }
+    } finally { window.fetch = original }
+  })
+  expect(result.error).toContain('invalid SSE JSON')
+  expect(result.cancelled).toBe(true)
+})

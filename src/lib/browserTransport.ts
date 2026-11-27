@@ -183,6 +183,45 @@ interface DecodedResponse extends BrowserTransportDelta { done?: boolean }
 
 class ResponsesDecoder {
   private seen = new Map<string, string>()
+  private seenAnswers = new Map<string, string>()
+  private answerAliases = new Map<string, string>()
+
+  private answerItemId(itemId: unknown, outputIndex: unknown): string {
+    const id = asString(itemId)
+    const index = tokenCount(outputIndex)
+    const aliases = [id === undefined ? null : `id:${id}`, index === null ? null : `index:${index}`]
+      .filter((alias): alias is string => alias !== null)
+    // Some compatible servers identify deltas only by output index and include
+    // an item ID later. Treat both as aliases for the same streamed answer.
+    if (!aliases.length) aliases.push('index:0')
+    const key = aliases.map(alias => this.answerAliases.get(alias)).find(Boolean) ?? aliases[0]
+    for (const alias of aliases) this.answerAliases.set(alias, key)
+    return key
+  }
+
+  private answer(id: string, index: number, kind: 'output_text' | 'refusal', value: unknown, snapshot: boolean): string {
+    const text = asString(value)
+    if (text === undefined) return ''
+    const key = `${id}-${kind}-${index}`
+    const previous = this.seenAnswers.get(key) ?? ''
+    // A .done event or final response can repeat all the text already streamed,
+    // or supply text missing from the deltas. Append only the unseen suffix.
+    const addition = snapshot ? (text.startsWith(previous) ? text.slice(previous.length) : '') : text
+    this.seenAnswers.set(key, previous + addition)
+    return addition
+  }
+
+  private messageItem(item: unknown, outputIndex: unknown): string {
+    if (field(item, 'type') !== 'message') return ''
+    const entries = field(item, 'content')
+    if (!Array.isArray(entries)) return ''
+    const id = this.answerItemId(field(item, 'id'), outputIndex)
+    return entries.map((entry, index) => {
+      const kind = field(entry, 'type')
+      if (kind !== 'output_text' && kind !== 'refusal') return ''
+      return this.answer(id, index, kind, field(entry, kind === 'output_text' ? 'text' : 'refusal'), true)
+    }).join('')
+  }
 
   private part(parts: ReasoningPart[], id: string, kind: 'summary' | 'text', value: unknown, snapshot: boolean): void {
     const text = asString(value)
@@ -210,7 +249,7 @@ class ResponsesDecoder {
     const parts: ReasoningPart[] = []
     let encrypted = false
     let tokens: number | null = null
-    let text: string | undefined
+    let text = ''
     let done = false
     switch (type) {
       case 'error':
@@ -219,8 +258,15 @@ class ResponsesDecoder {
         throw new Error(`Provider stream error: ${asString(field(value, 'response', 'error', 'message')) ?? 'Responses API request failed'}`)
       case 'response.output_text.delta':
       case 'response.refusal.delta':
-        text = asString(value.delta)
+      case 'response.output_text.done':
+      case 'response.refusal.done': {
+        const kind = type.includes('refusal') ? 'refusal' : 'output_text'
+        const snapshot = type.endsWith('.done')
+        const id = this.answerItemId(value.item_id, value.output_index)
+        text = this.answer(id, tokenCount(value.content_index) ?? 0, kind,
+          value[snapshot ? (kind === 'refusal' ? 'refusal' : 'text') : 'delta'], snapshot)
         break
+      }
       case 'response.reasoning_summary_text.delta':
       case 'response.reasoning_text.delta':
       case 'response.reasoning_summary_text.done':
@@ -235,6 +281,7 @@ class ResponsesDecoder {
       }
       case 'response.output_item.done':
         encrypted = this.item(parts, value.item, String(value.output_index ?? 'null'))
+        text = this.messageItem(value.item, value.output_index)
         break
       case 'response.completed':
       case 'response.incomplete': {
@@ -242,13 +289,16 @@ class ResponsesDecoder {
         tokens = tokenCount(field(value, 'response', 'usage', 'output_tokens_details', 'reasoning_tokens'))
         const items = field(value, 'response', 'output')
         if (Array.isArray(items)) {
-          items.forEach((item, index) => { encrypted = this.item(parts, item, String(index)) || encrypted })
+          items.forEach((item, index) => {
+            encrypted = this.item(parts, item, String(index)) || encrypted
+            text += this.messageItem(item, index)
+          })
         }
         break
       }
     }
     const reasoning = reasoningValue(parts, tokens, encrypted)
-    return { ...(text !== undefined ? { text } : {}), ...(reasoning ? { reasoning } : {}), ...(done ? { done } : {}) }
+    return { ...(text ? { text } : {}), ...(reasoning ? { reasoning } : {}), ...(done ? { done } : {}) }
   }
 }
 
@@ -331,7 +381,9 @@ export async function streamBrowserProviderRequest({ provider, requestJson, sign
     return output
   } finally {
     signal?.removeEventListener('abort', onAbort)
-    if (complete || signal?.aborted) void reader.cancel().catch(() => undefined)
+    // Also cancel on decoding or provider errors; releasing the lock alone
+    // leaves an unread response and potentially a still-running connection.
+    void reader.cancel().catch(() => undefined)
     reader.releaseLock()
   }
 }

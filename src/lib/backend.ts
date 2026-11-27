@@ -378,7 +378,13 @@ export async function selectModel(uniqueModelId: UniqueModelId): Promise<Provide
 
 export async function compileRequest(args: CompileRequestArgs): Promise<RequestPreview> {
   if (isTauri()) return call('compile_request', { args })
-  const provider = activeBrowserProvider()
+  return compileBrowserRequest(args, activeBrowserProvider())
+}
+
+// Resolve the provider once per operation, before any asynchronous database
+// work. The compiled model, protocol, endpoint and API key must agree even if
+// the catalog changes while we are reading history/context.
+async function compileBrowserRequest(args: CompileRequestArgs, provider: ProviderConfig): Promise<RequestPreview> {
   await browserData.getConversation(args.conversationId)
   const browserMessages = await browserData.getMessages(args.conversationId)
   const byId = new Map(browserMessages.map((message) => [message.id, message]))
@@ -522,8 +528,8 @@ export async function cancelRequest(requestId: string): Promise<void> {
 
 export async function sendMessage(args: CompileRequestArgs): Promise<string> {
   if (isTauri()) return call<string>('send_message', { args })
-  const preview = await compileRequest(args)
   const provider = activeBrowserProvider()
+  const preview = await compileBrowserRequest(args, provider)
   const now = Date.now()
   const user: Message = {
     id: crypto.randomUUID(),
@@ -548,8 +554,8 @@ export async function regenerateResponse(args: RegenerateArgs): Promise<string> 
     throw new Error('The user message for this response is no longer available')
   }
 
-  const preview = await compileRequest({ conversationId: args.conversationId, parentId: user.parent_id,
-    input: user.content, images: user.images, historyMode: args.historyMode, sinceMessageId: args.sinceMessageId })
+  const preview = await compileBrowserRequest({ conversationId: args.conversationId, parentId: user.parent_id,
+    input: user.content, images: user.images, historyMode: args.historyMode, sinceMessageId: args.sinceMessageId }, provider)
   const requestId = crypto.randomUUID()
   await browserData.beginRequest({ requestId, conversationId: args.conversationId, user, preview, existingUser: true })
   return startBrowserStream(user, requestId, preview, provider, false)
